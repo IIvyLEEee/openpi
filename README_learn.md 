@@ -1,0 +1,66 @@
+我先快速扫描这个仓库的目录结构和所有 README/文档文件，再提炼出“能做的任务”和“可配置项”，最后给你一个汇总表格（按模块+用途+入口命令/配置方式来整理）。
+
+[4 tools called]
+
+我已经定位到主 README、docs 和 examples 下的说明文档。下一步我会逐个提炼“功能/任务/配置入口”，再按你要的汇总表输出。
+
+[20 tools called]
+
+我在继续补齐“代码目录级结构”（比如 `src`、`scripts`、`packages` 下的真实模块分层），这样表格里会同时给出“文档说了什么”和“仓库里对应入口在哪”。
+
+[10 tools called]
+
+基于我通读的仓库文档（`README.md`、`docs/*.md`、`examples/*/README*.md`、`CONTRIBUTING.md`）和关键入口脚本，我给你做了一个“结构 + 可做任务/配置”的汇总。
+
+## 仓库结构梳理（高层）
+
+| 模块 | 主要内容 | 你会在这里做什么 |
+|---|---|---|
+| `README.md` | 项目总览、安装、模型检查点、训练/推理主流程、PyTorch 支持、故障排查 | 先看这个，确定全局流程与命令 |
+| `docs/` | `docker.md`、`remote_inference.md`、`norm_stats.md` | 看部署方式（Docker）、远程推理、归一化统计策略 |
+| `examples/` | `droid`、`aloha_real`、`aloha_sim`、`libero`、`simple_client`、`ur5` 等示例 | 按机器人/场景跑端到端 Demo 或改成你自己的任务 |
+| `scripts/` | `serve_policy.py`、`train.py`、`compute_norm_stats.py`、`train_pytorch.py` | 生产级入口：开服务、训练、算归一化、PyTorch 训练 |
+| `src/openpi/` | 核心代码：`models`、`models_pytorch`、`policies`、`training`、`serving`、`shared` | 真正改模型/策略/训练逻辑都在这里 |
+| `packages/openpi-client/` | 轻量 websocket 客户端与图像工具 | 在机器人端或外部 runtime 里接远程策略服务 |
+| `third_party/` | ALOHA、LIBERO 子模块 | 依赖生态（仿真/硬件）与上游说明 |
+| `CONTRIBUTING.md` | issue / PR 规范 | 打算贡献代码时参考 |
+
+---
+
+## 这个仓库“到底可以做什么”（任务维度）
+
+| 任务类型 | 是否支持 | 入口/文档 | 说明 |
+|---|---|---|---|
+| 直接推理（本地/服务器） | 是 | `README.md`、`examples/inference.ipynb` | 可直接加载公开 checkpoint 做 VLA 推理 |
+| 远程推理（机器人端-服务端分离） | 是 | `docs/remote_inference.md`、`scripts/serve_policy.py`、`packages/openpi-client` | 通过 websocket 把观测发到远端 GPU，返回 action chunk |
+| 无机器人快速联调 | 是 | `examples/simple_client/README.md` | 随机观测打通推理链路，验证吞吐/接口 |
+| DROID 实机推理 | 是 | `examples/droid/README.md` | 推荐远程服务模式，在 DROID 控制机调用 client |
+| ALOHA 实机推理 | 是 | `examples/aloha_real/README.md` | 支持预训练/微调 checkpoint，含场景建议 |
+| ALOHA 仿真推理 | 是 | `examples/aloha_sim/README.md` | 可用 Docker 或本地环境跑 sim |
+| LIBERO 基准评估 | 是 | `examples/libero/README.md` | 支持 benchmark 评估流程 |
+| 基础模型微调（自有数据） | 是 | `README.md` 主流程 | 路线：数据转 LeRobot -> 算 norm stats -> 训练 -> 起服务 |
+| DROID 全量数据训练（RLDS） | 是 | `examples/droid/README_train.md` | 提供大规模数据训练路径与过滤策略 |
+| 自定义机器人接入（如 UR5） | 是 | `examples/ur5/README.md` | 给了 Inputs/Outputs/DataConfig/TrainConfig 模板 |
+| PyTorch 推理/训练 | 是（部分） | `README.md` “PyTorch Support” | 支持 π₀/π₀.₅（不含 π₀-FAST 等部分特性） |
+| JAX checkpoint 转 PyTorch | 是 | `examples/convert_jax_model_to_pytorch.py` | 便于迁移到 PyTorch pipeline |
+
+---
+
+## 主要“可配置项”汇总（你最常改的）
+
+| 配置类别 | 关键参数/方式 | 在哪改 |
+|---|---|---|
+| 运行环境选择 | `--env`（`ALOHA`/`ALOHA_SIM`/`DROID`/`LIBERO`） | `scripts/serve_policy.py` |
+| 策略来源 | 默认策略或 `policy:checkpoint --policy.config --policy.dir` | `scripts/serve_policy.py` |
+| 服务参数 | `--port`、`--default_prompt`、`--record` | `scripts/serve_policy.py` |
+| 训练配置选择 | `scripts/train.py <config_name>` | `src/openpi/training/config.py` |
+| 已提供训练配置名（示例） | `pi05_droid`、`pi05_libero`、`pi0_aloha_sim`、`pi05_full_droid_finetune`、`pi05_droid_finetune` 等 | `src/openpi/training/config.py` |
+| 归一化统计 | 先算新 stats，或在 `AssetsConfig` 重载预训练 stats（`asset_id`） | `scripts/compute_norm_stats.py`、`docs/norm_stats.md` |
+| 数据通路 | LeRobot（常规）/ RLDS（大规模 DROID） | `README.md`、`examples/droid/README_train.md` |
+| 训练资源策略 | `XLA_PYTHON_CLIENT_MEM_FRACTION`、`fsdp_devices` 等 | `README.md`、训练 config |
+| 安装/运行方式 | `uv` 原生 或 Docker compose | `README.md`、`docs/docker.md` |
+| PyTorch 模式 | 转换 checkpoint、`train_pytorch.py`、`pytorch_weight_path`、精度选项 | `README.md` |
+
+---
+
+如果你愿意，我可以下一步给你一版“按你设备条件（单卡/多卡、是否有实机）”的**最短可执行路径**（比如 30 分钟内先跑通哪条命令链最稳）。
