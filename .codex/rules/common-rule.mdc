@@ -1,0 +1,38 @@
+---
+alwaysApply: true
+---
+
+# 通用规则
+
+## 训练启动规则
+
+- 启动训练必须使用 `tmux`，不要直接在当前 shell 前台跑长训练。
+- 使用hydra override的方式设置不同实验的参数，不要直接改动yaml。
+- 训练只能使用 GPU 1-3。
+- 每次选择 GPU 前，先运行 `nvidia-smi` 查看 GPU 1-3 的显存和利用率。
+- 在 GPU 1-3 中选择当前最空闲的一张；如果显存和利用率接近，优先选择显存占用更低的 GPU。
+- 启动训练时显式设置设备，例如 `training.device=cuda:1` 或 `CUDA_VISIBLE_DEVICES=1`，确保不会占用 GPU 0。
+- openpi/JAX 训练时优先显式设置缓存和输出路径，避免大文件写到仓库或 home：
+  - `UV_CACHE_DIR=/tmp/uv-cache`
+  - `HF_HOME=/home/liyixuan23/openpi/.hf_cache`
+  - `HF_DATASETS_CACHE=/home/liyixuan23/openpi/.hf_cache/datasets`
+  - `HF_LEROBOT_HOME=/data/archive_liyixuan23/finetune_pi/openpi_lerobot`
+  - `OPENPI_DATA_HOME=/data/archive_liyixuan23/finetune_pi/openpi_cache`
+  - `--checkpoint-base-dir /data/archive_liyixuan23/finetune_pi/checkpoints`
+- openpi/JAX 的 `nvidia-smi` 显存读数常包含 XLA 预分配；`XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` 会让进程最多预留约 90% 显存，不等同于模型实际最低显存需求。
+- wandb 默认要求 online，正式训练命令使用 `WANDB_MODE=online` 和 `--wandb-enabled`，方便查看训练曲线。
+- 当前 UMI LoRA config 默认 global batch 为 `16`；使用多卡时 `--batch-size` 必须能被可见 GPU 数整除。
+- 两卡 pi0 UMI LoRA 正式训练默认命令（data parallel，优先提吞吐，使用 GPU 1,2）：
+  `tmux new-session -d -s pi0_umi_2gpu 'cd /home/liyixuan23/openpi && CUDA_VISIBLE_DEVICES=1,2 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 WANDB_MODE=online UV_CACHE_DIR=/tmp/uv-cache HF_HOME=/home/liyixuan23/openpi/.hf_cache HF_DATASETS_CACHE=/home/liyixuan23/openpi/.hf_cache/datasets HF_LEROBOT_HOME=/data/archive_liyixuan23/finetune_pi/openpi_lerobot OPENPI_DATA_HOME=/data/archive_liyixuan23/finetune_pi/openpi_cache uv run scripts/train.py pi0_umi_ur5e_lora --exp-name pi0_umi_2gpu_lora --overwrite --wandb-enabled --checkpoint-base-dir /data/archive_liyixuan23/finetune_pi/checkpoints --batch-size 16 --num-workers 4 > logs/pi0_umi_2gpu.log 2>&1'`
+
+## 微调目标
+
+- 我们的微调是用umi数据微调使其能在Ur5e机械臂上执行
+- 本仓库微调产生的可复用数据、缓存、LeRobot数据集、模型下载缓存、训练输出等，优先存放在当前用户可读写的 `/data/archive_liyixuan23/finetune_pi` 下。
+- 特别大的 checkpoint / base 权重 / 模型下载缓存必须放在 `/data/archive_liyixuan23/finetune_pi` 下，例如使用 `OPENPI_DATA_HOME=/data/archive_liyixuan23/finetune_pi/openpi_cache`，不要长期放在仓库目录或用户 home 的普通缓存目录。
+- 关于umi数据的config可以参考/data/archive_liyixuan23/umi_for_train。
+- 关于ur5e的config请你优先参考本仓库下examples/ur5，其次可以参考/home/liyixuan23/pi_ur5e，但是后者要辩证看待因为它是用gello数据微调，只能作为ur5e配置的一点点参考。
+
+## 网络访问
+
+- 遇到github/huggingface/google cloud等下载速度小于4MB/s时可考虑执行proxy_on，或者执行proxy_off后更换节点为国内镜像站hf-mirror

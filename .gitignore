@@ -3,6 +3,13 @@ assets/
 checkpoints/
 data/
 wandb/
+.hf_cache/
+.openpi_cache/
+.hf_cache
+.openpi_cache
+.vscode/
+.vscode
+logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

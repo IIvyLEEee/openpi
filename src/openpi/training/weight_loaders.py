@@ -55,6 +55,22 @@ class CheckpointWeightLoader(WeightLoader):
 
 
 @dataclasses.dataclass(frozen=True)
+class ShapeCompatibleCheckpointWeightLoader(WeightLoader):
+    """Loads checkpoint weights while keeping newly shaped parameters initialized.
+
+    This is useful when fine-tuning a base model with a different action dimension:
+    shared parameters are restored, while resized input/output heads and new LoRA
+    parameters are kept from the freshly initialized model.
+    """
+
+    params_path: str
+
+    def load(self, params: at.Params) -> at.Params:
+        loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        return _merge_shape_compatible_params(loaded_params, params)
+
+
+@dataclasses.dataclass(frozen=True)
 class PaliGemmaWeightLoader(WeightLoader):
     """Loads weights from the official PaliGemma checkpoint.
 
@@ -100,5 +116,33 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     for k in {k for k in flat_ref if pattern.fullmatch(k)}:
         if k not in result:
             result[k] = flat_ref[k]
+
+    return flax.traverse_util.unflatten_dict(result, sep="/")
+
+
+def _merge_shape_compatible_params(loaded_params: at.Params, params: at.Params) -> at.Params:
+    flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
+    flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
+
+    result = {}
+    skipped = []
+    for k, v in flat_loaded.items():
+        if k not in flat_ref:
+            continue
+        if v.shape != flat_ref[k].shape:
+            skipped.append((k, v.shape, flat_ref[k].shape))
+            continue
+        result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
+
+    for k, v in flat_ref.items():
+        if k not in result:
+            result[k] = v
+
+    if skipped:
+        logger.info(
+            "Skipped %d checkpoint parameters with incompatible shapes: %s",
+            len(skipped),
+            ", ".join(f"{k} {old}->{new}" for k, old, new in skipped[:10]),
+        )
 
     return flax.traverse_util.unflatten_dict(result, sep="/")

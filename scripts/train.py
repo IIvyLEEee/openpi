@@ -2,6 +2,7 @@ import dataclasses
 import functools
 import logging
 import platform
+import time
 from typing import Any
 
 import etils.epath as epath
@@ -248,6 +249,7 @@ def main(config: _config.TrainConfig):
     )
 
     start_step = int(train_state.step)
+    lr_schedule = config.lr_schedule.create()
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,
@@ -256,6 +258,7 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
+    last_log_time = time.perf_counter()
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -263,10 +266,17 @@ def main(config: _config.TrainConfig):
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            now = time.perf_counter()
+            elapsed = max(now - last_log_time, 1e-6)
+            steps_per_sec = len(infos) / elapsed
+            reduced_info["lr"] = float(lr_schedule(step))
+            reduced_info["steps_per_sec"] = steps_per_sec
+            reduced_info["samples_per_sec"] = steps_per_sec * config.batch_size
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []
+            last_log_time = now
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
