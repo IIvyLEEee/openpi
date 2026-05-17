@@ -25,15 +25,17 @@ DEFAULT_PROMPT = "pick up the red block on the conveyor belt. put it in the blue
 
 
 def _register_umi_codecs() -> None:
-    codec_dir = pathlib.Path("/data/archive_liyixuan23/umi_for_train/diffusion_policy/codecs")
-    if codec_dir.exists():
-        sys.path.insert(0, str(codec_dir))
+    repo_codec_dir = pathlib.Path(__file__).resolve().parent / "codecs"
+    legacy_codec_dir = pathlib.Path("/data/archive_liyixuan23/umi_for_train/diffusion_policy/codecs")
+    for codec_dir in (repo_codec_dir, legacy_codec_dir):
+        if codec_dir.exists():
+            sys.path.insert(0, str(codec_dir))
     try:
         from imagecodecs_numcodecs import register_codecs
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "Could not import UMI JPEG-XL codec registration. "
-            "Install imagecodecs and check /data/archive_liyixuan23/umi_for_train/diffusion_policy/codecs."
+            "Check examples/ur5/codecs/imagecodecs_numcodecs.py or install the UMI codec file."
         ) from exc
     register_codecs()
 

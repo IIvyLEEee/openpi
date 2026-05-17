@@ -35,13 +35,13 @@ test -f src/openpi/policies/umi_ur5e_policy.py
 rg -n "pi0_umi_ur5e_lora|pi05_umi_ur5e_lora|ShapeCompatibleCheckpointWeightLoader" src/openpi/training
 ```
 
-The converter also needs the UMI JPEG-XL codec registration file:
+The converter uses the UMI JPEG-XL codec registration file that is vendored in this repo:
 
 ```text
-/data/archive_liyixuan23/umi_for_train/diffusion_policy/codecs/imagecodecs_numcodecs.py
+examples/ur5/codecs/imagecodecs_numcodecs.py
 ```
 
-If that file is missing, copy it from the original UMI environment before running conversion. The codec directory is small, about `156K` in the current machine.
+The converter also has a legacy fallback to `/data/archive_liyixuan23/umi_for_train/diffusion_policy/codecs`, but a fresh machine should not need that external UMI tree as long as the vendored file exists.
 
 ## 1. Environment Setup
 
@@ -439,10 +439,10 @@ Missing codec:
 ModuleNotFoundError: imagecodecs_numcodecs
 ```
 
-Fix by placing `imagecodecs_numcodecs.py` under:
+Fix by making sure the repo contains:
 
 ```text
-/data/archive_liyixuan23/umi_for_train/diffusion_policy/codecs
+examples/ur5/codecs/imagecodecs_numcodecs.py
 ```
 
 Missing norm stats:
