@@ -11,6 +11,7 @@ wandb/
 .vscode
 logs/
 .codex/rules/
+ckpt/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

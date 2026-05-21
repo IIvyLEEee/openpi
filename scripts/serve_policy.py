@@ -1,3 +1,4 @@
+import datasets  # workaround import-order segfault on 20.04
 import dataclasses
 import enum
 import logging
