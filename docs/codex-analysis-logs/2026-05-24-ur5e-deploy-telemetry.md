@@ -42,8 +42,16 @@
 - Rationale: The code paths are only useful if the exact run and post-processing commands are documented next to the deployment instructions.
 - Next: Update `deploy/README.md`, rerun focused tests, and commit documentation.
 
+### 17:05 Step 5 - Documentation And Verification
+- Action: Updated `deploy/README.md` with telemetry fields, run commands, replay buffer recording, plotting command, and quick JSONL summary snippet. Fixed lint issues in the new plotting module.
+- Evidence (files/commands/output): Commit `e4dd28f Document UR5e telemetry workflow`; `.venv/bin/python -m pytest deploy/telemetry_test.py deploy/plot_umi_trajectory_test.py` reported `6 passed`; `python -m py_compile deploy/inference_real.py deploy/telemetry.py deploy/plot_umi_trajectory.py deploy/telemetry_test.py deploy/plot_umi_trajectory_test.py` exited 0; `ruff check deploy/telemetry.py deploy/plot_umi_trajectory.py deploy/telemetry_test.py deploy/plot_umi_trajectory_test.py` reported all checks passed.
+- Observation: Focused tests and new module lint are clean. A broader `ruff check` including `deploy/inference_real.py` still reports existing path-hack/lazy-import issues (`E402`, `PLC0415`) plus a nested-context suggestion; these are not introduced by the telemetry logic, except that the new telemetry import participates in the same existing path-hack pattern.
+- Adjustment: Do not rewrite the deployment script import strategy in this task.
+- Rationale: The local imports delay heavy hardware/CV imports and the sys.path block is already used to support direct script execution.
+- Next: Commit final cleanup and report usage.
+
 ## Final Summary
-- What was confirmed:
-- What changed from initial plan:
-- Open risks or unknowns:
-- Recommended next actions:
+- What was confirmed: UR5e deployment already computed inference latency and chunk counts in console logs; the implementation now persists them per inference in JSONL. Replay buffer trajectory/gripper data is available when `--record-episode` enables `BimanualUmiEnv.start_episode()`.
+- What changed from initial plan: Added code rather than only a research note, because the deployment entrypoint lacked structured metrics and did not expose replay buffer recording.
+- Open risks or unknowns: `inference_latency_ms` is client-observed policy call latency, including websocket/serialization/server work; pure model GPU compute time would need server-side instrumentation in `scripts/serve_policy.py` or the policy object. `--record-episode` is intended for actual execution; no-execute/observe-only runs do not produce meaningful executed-action trajectories.
+- Recommended next actions: Run a short `--no-execute` telemetry collection to validate policy latency and chunk sizes, then run a guarded real execution with `--record-episode` and plot the resulting `replay_buffer.zarr`.

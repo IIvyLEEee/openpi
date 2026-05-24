@@ -54,7 +54,7 @@ def make_colored_trajectory_segments(
 
 
 def load_replay_episode(replay_buffer_path: pathlib.Path | str, *, episode_idx: int = -1) -> dict[str, np.ndarray]:
-    from deploy.umi_data.common.replay_buffer import ReplayBuffer
+    from deploy.umi_data.common.replay_buffer import ReplayBuffer  # noqa: PLC0415
 
     replay_buffer_path = pathlib.Path(replay_buffer_path).expanduser()
     buffer = ReplayBuffer.copy_from_path(str(replay_buffer_path), store=None)
@@ -81,8 +81,8 @@ def plot_trajectory(
     title: str | None = None,
     cmap: str = "viridis",
 ) -> pathlib.Path:
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d.art3d import Line3DCollection
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+    from mpl_toolkits.mplot3d.art3d import Line3DCollection  # noqa: PLC0415
 
     output_path = pathlib.Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +114,7 @@ def plot_trajectory(
     ax_width.plot(elapsed, trajectory.gripper_widths, color="black", linewidth=1.5)
     ax_width.set_xlabel("time (s)")
     ax_width.set_ylabel("gripper width (m)")
-    ax_width.grid(True, alpha=0.3)
+    ax_width.grid(visible=True, alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
