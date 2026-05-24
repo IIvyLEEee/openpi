@@ -999,6 +999,60 @@ _CONFIGS = [
         wandb_enabled=False,
     ),
     TrainConfig(
+        name="pi0_umi_ur5e_conveyor_lora",
+        model=pi0_config.Pi0Config(
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUmiUr5eDataConfig(
+            repo_id="liyixuan23/conveyor",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.ShapeCompatibleCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
+        batch_size=16,
+        num_workers=4,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="pi0_umi_ur5e_pick_place_lora",
+        model=pi0_config.Pi0Config(
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUmiUr5eDataConfig(
+            repo_id="liyixuan23/pick_place",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.ShapeCompatibleCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
+        batch_size=16,
+        num_workers=4,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
         name="pi05_umi_ur5e_lora",
         model=pi0_config.Pi0Config(
             pi05=True,
@@ -1009,6 +1063,64 @@ _CONFIGS = [
         ),
         data=LeRobotUmiUr5eDataConfig(
             repo_id="liyixuan23/umi_conveyor",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.ShapeCompatibleCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
+        batch_size=16,
+        num_workers=4,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="pi05_umi_ur5e_conveyor_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUmiUr5eDataConfig(
+            repo_id="liyixuan23/conveyor",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.ShapeCompatibleCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=30_000,
+        batch_size=16,
+        num_workers=4,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="pi05_umi_ur5e_pick_place_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=7,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUmiUr5eDataConfig(
+            repo_id="liyixuan23/pick_place",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.ShapeCompatibleCheckpointWeightLoader(

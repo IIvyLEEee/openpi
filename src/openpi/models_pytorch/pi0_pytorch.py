@@ -374,7 +374,7 @@ class PI0Pytorch(nn.Module):
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+    def sample_actions(self, device, observation, noise=None, num_steps=10, log_denoise_steps=False) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
@@ -404,7 +404,10 @@ class PI0Pytorch(nn.Module):
 
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        step_i = 0
         while time >= -dt / 2:
+            if log_denoise_steps:
+                print(f"pi0 denoise step {step_i + 1}/{num_steps}", flush=True)
             expanded_time = time.expand(bsize)
             v_t = self.denoise_step(
                 state,
@@ -417,6 +420,7 @@ class PI0Pytorch(nn.Module):
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t
             time += dt
+            step_i += 1
         return x_t
 
     def denoise_step(

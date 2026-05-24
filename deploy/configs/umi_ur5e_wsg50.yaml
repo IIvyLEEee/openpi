@@ -1,0 +1,33 @@
+cameras:
+  - camera_type: uvc
+    # Optional. If omitted, the runtime auto-detects /dev/v4l/by-id devices.
+    # dev_video_path: /dev/video0
+    capture_res: [1920, 1080]
+    output_res: [224, 224]
+    fps: 60
+    capture_fps: 60
+    bgr_to_rgb: true
+    cap_buffer_size: 1
+
+robots:
+  - robot_type: ur5e
+    robot_ip: 192.168.1.2
+    robot_obs_latency: 0.0001
+    robot_action_latency: 0.1
+    tcp_offset: 0.235
+    unified_tx:
+      - [-0.9999765584, -0.00678194214, -0.0009422879391, -0.02836760578]
+      - [0.006757370413, -0.9996889717, 0.02400620231, -0.5950424532]
+      - [-0.001104803536, 0.02399927218, 0.9997113655, 0.02930309251]
+      - [0.0, 0.0, 0.0, 1.0]
+    height_threshold: -0.024
+    sphere_radius: 0.1
+    sphere_center: [0, -0.06, -0.185]
+
+grippers:
+  - gripper_type: wsg50
+    gripper_ip: 192.168.1.20
+    gripper_port: 1000
+    gripper_obs_latency: 0.01
+    gripper_action_latency: 0.1
+    finger_thickness: 0.023
