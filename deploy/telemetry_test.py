@@ -61,6 +61,45 @@ def test_build_inference_record_sets_executed_count_to_zero_when_no_execute():
     assert record["no_execute"] is True
 
 
+def test_build_inference_record_includes_async_metrics_when_present():
+    actions = np.ones((2, 7), dtype=np.float32)
+
+    record = build_inference_record(
+        iteration=0,
+        loop_step=0,
+        wall_time=100.0,
+        obs_timestamp=99.0,
+        inference_latency_ms=10.0,
+        actions=actions,
+        scheduled_actions=actions,
+        scheduled_timestamps=np.array([100.1, 100.2], dtype=np.float64),
+        state=np.zeros(7, dtype=np.float32),
+        no_execute=False,
+        steps_per_inference=2,
+        async_metrics={
+            "async_mode": True,
+            "async_request_id": 5,
+            "async_overlap_steps": 3,
+            "async_overlap_window_ms": 300.0,
+            "async_policy_call_ms": 125.0,
+            "async_chunk_boundary_wait_ms": 20.0,
+            "async_hidden_inference_ms": 105.0,
+            "async_future_state_applied": True,
+            "async_target_start_timestamp": 101.0,
+        },
+    )
+
+    assert record["async_mode"] is True
+    assert record["async_request_id"] == 5
+    assert record["async_overlap_steps"] == 3
+    assert record["async_overlap_window_ms"] == 300.0
+    assert record["async_policy_call_ms"] == 125.0
+    assert record["async_chunk_boundary_wait_ms"] == 20.0
+    assert record["async_hidden_inference_ms"] == 105.0
+    assert record["async_future_state_applied"] is True
+    assert record["async_target_start_timestamp"] == 101.0
+
+
 def test_inference_telemetry_recorder_writes_jsonl_and_creates_parent_dir(tmp_path):
     telemetry_path = tmp_path / "nested" / "inference.jsonl"
     record = {

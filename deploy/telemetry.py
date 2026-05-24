@@ -11,6 +11,14 @@ def _array_or_none(value: np.ndarray | None) -> list[float] | None:
     return np.asarray(value).reshape(-1).tolist()
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.reshape(-1).tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def build_inference_record(
     *,
     iteration: int,
@@ -24,6 +32,7 @@ def build_inference_record(
     state: np.ndarray,
     no_execute: bool,
     steps_per_inference: int | None,
+    async_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     actions = np.asarray(actions, dtype=np.float32)
     scheduled_actions = np.asarray(scheduled_actions, dtype=np.float32)
@@ -38,7 +47,7 @@ def build_inference_record(
     first_action = actions[0] if model_action_count > 0 else None
     last_action = actions[-1] if model_action_count > 0 else None
 
-    return {
+    record = {
         "iteration": int(iteration),
         "loop_step": int(loop_step),
         "wall_time": float(wall_time),
@@ -56,6 +65,9 @@ def build_inference_record(
         "last_action": _array_or_none(last_action),
         "scheduled_timestamps": scheduled_timestamps.reshape(-1).tolist(),
     }
+    if async_metrics:
+        record.update({key: _json_safe(value) for key, value in async_metrics.items()})
+    return record
 
 
 class InferenceTelemetryRecorder:

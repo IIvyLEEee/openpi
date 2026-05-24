@@ -1,20 +1,19 @@
+# ruff: noqa: E402, PLC0415, SIM117
 import dataclasses
 import logging
+from multiprocessing.managers import SharedMemoryManager
 import os
 import pathlib
 import sys
 import time
-from multiprocessing.managers import SharedMemoryManager
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
-from openpi_client import websocket_client_policy
-import tyro
-import yaml
 
+from deploy import async_inference as _async_inference
 from deploy import telemetry as _telemetry
 
 logger = logging.getLogger(__name__)
@@ -42,9 +41,24 @@ class Args:
     show_camera: bool = True
     record_episode: bool = False
     telemetry_path: pathlib.Path | None = None
+    async_inference: bool = False
+    inference_overlap_steps: int = 0
+    async_future_state: bool = True
+
+
+@dataclasses.dataclass
+class _PendingAsyncRequest:
+    request: _async_inference.AsyncInferenceRequest
+    target_start_timestamp: float
+    overlap_steps: int
+    overlap_window_ms: float
+    future_state_applied: bool
+    state: np.ndarray
 
 
 def _load_robot_config(path: pathlib.Path) -> dict:
+    import yaml
+
     with path.expanduser().open("r") as f:
         config = yaml.safe_load(f)
     for key in ("cameras", "robots", "grippers"):
@@ -142,9 +156,11 @@ def _future_action_schedule(
     eval_start_time: float,
     frequency: float,
     action_exec_latency: float,
+    start_timestamp: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     dt = 1.0 / frequency
-    timestamps = np.arange(len(actions), dtype=np.float64) * dt + obs_timestamp
+    schedule_start = obs_timestamp if start_timestamp is None else start_timestamp
+    timestamps = np.arange(len(actions), dtype=np.float64) * dt + schedule_start
 
     curr_time = time.time()
     is_new = timestamps > (curr_time + action_exec_latency)
@@ -153,6 +169,27 @@ def _future_action_schedule(
 
     next_step_idx = int(np.ceil((curr_time - eval_start_time) / dt))
     return actions[[-1]], np.array([eval_start_time + next_step_idx * dt], dtype=np.float64)
+
+
+def _truncate_scheduled_actions(
+    scheduled_actions: np.ndarray,
+    timestamps: np.ndarray,
+    args: Args,
+) -> tuple[np.ndarray, np.ndarray]:
+    max_scheduled_actions = args.max_scheduled_actions
+    if max_scheduled_actions is None:
+        max_scheduled_actions = args.steps_per_inference
+    if max_scheduled_actions is not None:
+        scheduled_actions = scheduled_actions[:max_scheduled_actions]
+        timestamps = timestamps[:max_scheduled_actions]
+    return scheduled_actions, timestamps
+
+
+def _validate_runtime_args(args: Args) -> None:
+    if args.frequency <= 0:
+        raise ValueError("--frequency must be positive.")
+    if args.async_inference and args.inference_overlap_steps <= 0:
+        raise ValueError("--async-inference requires --inference-overlap-steps to be positive.")
 
 
 def _show_camera(obs: dict, policy_image: np.ndarray | None = None) -> bool:
@@ -174,7 +211,9 @@ def _show_camera(obs: dict, policy_image: np.ndarray | None = None) -> bool:
     return cv2.waitKey(1) == 27
 
 
-def _connect_policy(args: Args) -> websocket_client_policy.WebsocketClientPolicy:
+def _connect_policy(args: Args):
+    from openpi_client import websocket_client_policy
+
     policy = websocket_client_policy.WebsocketClientPolicy(
         host=args.policy_server_host,
         port=args.policy_server_port,
@@ -224,6 +263,7 @@ def _run_real(args: Args) -> None:
     from deploy.umi.common.precise_sleep import precise_wait
     from deploy.umi.real_world.bimanual_umi_env import BimanualUmiEnv
 
+    _validate_runtime_args(args)
     robot_config = _load_robot_config(args.robot_config)
     cameras_config = robot_config["cameras"]
     robots_config = robot_config["robots"]
@@ -264,97 +304,188 @@ def _run_real(args: Args) -> None:
                 loop_start = time.monotonic()
                 iter_idx = 0
                 inference_idx = 0
+                async_worker = (
+                    _async_inference.AsyncInferenceWorker(policy.infer)
+                    if policy is not None and args.async_inference
+                    else None
+                )
+                pending_async: _PendingAsyncRequest | None = None
 
-                while True:
-                    obs = env.get_obs()
+                try:
+                    while True:
+                        schedule_start_timestamp = None
+                        async_metrics = {"async_mode": bool(async_worker)}
 
-                    policy_obs = _policy_observation_from_env_obs(obs, args.prompt)
-                    if show_camera:
-                        try:
-                            if _show_camera(obs, policy_obs["observation/image"]):
-                                logger.info("ESC pressed; stopping.")
-                                break
-                        except Exception as exc:
-                            logger.warning("cv2.imshow failed (%s); disabling camera window.", exc)
-                            show_camera = False
-                    logger.info(
-                        "obs state=%s image_shape=%s",
-                        np.array2string(policy_obs["observation/state"], precision=4),
-                        policy_obs["observation/image"].shape,
-                    )
+                        if pending_async is not None:
+                            if async_worker is None:
+                                raise RuntimeError("Pending async request exists without an async worker.")
+                            wait_start = time.perf_counter()
+                            async_result = async_worker.result()
+                            chunk_boundary_wait_ms = 1000 * (time.perf_counter() - wait_start)
+                            result = async_result.response
+                            wall_time = async_result.wall_time
+                            obs_timestamp = async_result.obs_timestamp
+                            state = pending_async.state
+                            infer_ms = async_result.policy_call_ms
+                            schedule_start_timestamp = pending_async.target_start_timestamp
+                            async_metrics.update(
+                                {
+                                    "async_request_id": pending_async.request.request_id,
+                                    "async_overlap_steps": pending_async.overlap_steps,
+                                    "async_overlap_window_ms": pending_async.overlap_window_ms,
+                                    "async_policy_call_ms": async_result.policy_call_ms,
+                                    "async_chunk_boundary_wait_ms": chunk_boundary_wait_ms,
+                                    "async_hidden_inference_ms": max(
+                                        0.0, async_result.policy_call_ms - chunk_boundary_wait_ms
+                                    ),
+                                    "async_future_state_applied": pending_async.future_state_applied,
+                                    "async_target_start_timestamp": pending_async.target_start_timestamp,
+                                }
+                            )
+                            pending_async = None
+                        else:
+                            obs = env.get_obs()
 
-                    if args.observe_only:
-                        iter_idx += 1
-                        t_cycle_end = loop_start + iter_idx * dt
+                            policy_obs = _policy_observation_from_env_obs(obs, args.prompt)
+                            if show_camera:
+                                try:
+                                    if _show_camera(obs, policy_obs["observation/image"]):
+                                        logger.info("ESC pressed; stopping.")
+                                        break
+                                except Exception as exc:
+                                    logger.warning("cv2.imshow failed (%s); disabling camera window.", exc)
+                                    show_camera = False
+                            logger.info(
+                                "obs state=%s image_shape=%s",
+                                np.array2string(policy_obs["observation/state"], precision=4),
+                                policy_obs["observation/image"].shape,
+                            )
+
+                            if args.observe_only:
+                                iter_idx += 1
+                                t_cycle_end = loop_start + iter_idx * dt
+                                if time.time() - eval_start_time > args.max_duration:
+                                    logger.info("Max duration reached.")
+                                    break
+                                precise_wait(t_cycle_end)
+                                continue
+
+                            if policy is None:
+                                raise RuntimeError("Policy is not connected.")
+                            infer_start = time.perf_counter()
+                            wall_time = time.time()
+                            result = policy.infer(policy_obs)
+                            infer_ms = 1000 * (time.perf_counter() - infer_start)
+                            obs_timestamp = float(obs["timestamp"][-1])
+                            state = policy_obs["observation/state"]
+                            if async_worker is None:
+                                async_metrics = {"async_mode": False}
+
+                        actions = _normalize_action_chunk(result)
+                        actions = _apply_safety_filters(actions, robot_config)
+
+                        scheduled_actions, timestamps = _future_action_schedule(
+                            actions=actions,
+                            obs_timestamp=obs_timestamp,
+                            eval_start_time=eval_start_time,
+                            frequency=args.frequency,
+                            action_exec_latency=args.action_exec_latency,
+                            start_timestamp=schedule_start_timestamp,
+                        )
+                        scheduled_actions, timestamps = _truncate_scheduled_actions(
+                            scheduled_actions=scheduled_actions,
+                            timestamps=timestamps,
+                            args=args,
+                        )
+
+                        telemetry_recorder.write(
+                            _telemetry.build_inference_record(
+                                iteration=inference_idx,
+                                loop_step=iter_idx,
+                                wall_time=wall_time,
+                                obs_timestamp=obs_timestamp,
+                                inference_latency_ms=infer_ms,
+                                actions=actions,
+                                scheduled_actions=scheduled_actions,
+                                scheduled_timestamps=timestamps,
+                                state=state,
+                                no_execute=args.no_execute,
+                                steps_per_inference=args.steps_per_inference,
+                                async_metrics=async_metrics,
+                            )
+                        )
+                        inference_idx += 1
+
+                        logger.info(
+                            "inference %.1f ms, got %d actions, scheduled %d%s, first_delta=%s, last_delta=%s",
+                            infer_ms,
+                            len(actions),
+                            len(scheduled_actions),
+                            " (no-execute)" if args.no_execute else "",
+                            np.array2string(actions[0, :6] - state[:6], precision=4),
+                            np.array2string(actions[-1, :6] - state[:6], precision=4),
+                        )
+                        if not args.no_execute:
+                            env.exec_actions(
+                                actions=scheduled_actions,
+                                timestamps=timestamps,
+                                compensate_latency=True,
+                            )
+
                         if time.time() - eval_start_time > args.max_duration:
                             logger.info("Max duration reached.")
                             break
+
+                        if args.max_scheduled_actions is not None:
+                            step_advance = args.max_scheduled_actions
+                        elif args.steps_per_inference is not None:
+                            step_advance = args.steps_per_inference
+                        else:
+                            step_advance = len(actions)
+                        iter_idx += max(1, step_advance)
+                        t_cycle_end = loop_start + iter_idx * dt
+
+                        if async_worker is not None and len(scheduled_actions) > 0:
+                            overlap_steps = min(args.inference_overlap_steps, len(scheduled_actions))
+                            target_start_timestamp = float(timestamps[-1] + dt)
+                            launch_timestamp = target_start_timestamp - overlap_steps * dt
+                            launch_monotonic = loop_start + max(0.0, launch_timestamp - eval_start_time)
+                            precise_wait(launch_monotonic)
+
+                            launch_obs = env.get_obs()
+                            launch_policy_obs = _policy_observation_from_env_obs(launch_obs, args.prompt)
+                            future_state_applied = False
+                            if args.async_future_state:
+                                launch_policy_obs = _async_inference.apply_future_state(
+                                    launch_policy_obs, scheduled_actions[-1]
+                                )
+                                future_state_applied = True
+
+                            request = async_worker.submit(
+                                launch_policy_obs,
+                                obs_timestamp=float(launch_obs["timestamp"][-1]),
+                            )
+                            pending_async = _PendingAsyncRequest(
+                                request=request,
+                                target_start_timestamp=target_start_timestamp,
+                                overlap_steps=overlap_steps,
+                                overlap_window_ms=1000 * overlap_steps * dt,
+                                future_state_applied=future_state_applied,
+                                state=launch_policy_obs["observation/state"],
+                            )
+                            logger.info(
+                                "launched async inference request %d with overlap_steps=%d, "
+                                "target_start=%.6f, future_state=%s",
+                                request.request_id,
+                                overlap_steps,
+                                target_start_timestamp,
+                                future_state_applied,
+                            )
+
                         precise_wait(t_cycle_end)
-                        continue
-
-                    infer_start = time.perf_counter()
-                    wall_time = time.time()
-                    result = policy.infer(policy_obs)
-                    actions = _normalize_action_chunk(result)
-                    actions = _apply_safety_filters(actions, robot_config)
-                    state = policy_obs["observation/state"]
-                    infer_ms = 1000 * (time.perf_counter() - infer_start)
-
-                    scheduled_actions, timestamps = _future_action_schedule(
-                        actions=actions,
-                        obs_timestamp=float(obs["timestamp"][-1]),
-                        eval_start_time=eval_start_time,
-                        frequency=args.frequency,
-                        action_exec_latency=args.action_exec_latency,
-                    )
-                    max_scheduled_actions = args.max_scheduled_actions
-                    if max_scheduled_actions is None:
-                        max_scheduled_actions = args.steps_per_inference
-                    if max_scheduled_actions is not None:
-                        scheduled_actions = scheduled_actions[:max_scheduled_actions]
-                        timestamps = timestamps[:max_scheduled_actions]
-
-                    telemetry_recorder.write(
-                        _telemetry.build_inference_record(
-                            iteration=inference_idx,
-                            loop_step=iter_idx,
-                            wall_time=wall_time,
-                            obs_timestamp=float(obs["timestamp"][-1]),
-                            inference_latency_ms=infer_ms,
-                            actions=actions,
-                            scheduled_actions=scheduled_actions,
-                            scheduled_timestamps=timestamps,
-                            state=state,
-                            no_execute=args.no_execute,
-                            steps_per_inference=args.steps_per_inference,
-                        )
-                    )
-                    inference_idx += 1
-
-                    logger.info(
-                        "inference %.1f ms, got %d actions, scheduled %d%s, first_delta=%s, last_delta=%s",
-                        infer_ms,
-                        len(actions),
-                        len(scheduled_actions),
-                        " (no-execute)" if args.no_execute else "",
-                        np.array2string(actions[0, :6] - state[:6], precision=4),
-                        np.array2string(actions[-1, :6] - state[:6], precision=4),
-                    )
-                    if not args.no_execute:
-                        env.exec_actions(
-                            actions=scheduled_actions,
-                            timestamps=timestamps,
-                            compensate_latency=True,
-                        )
-
-                    if time.time() - eval_start_time > args.max_duration:
-                        logger.info("Max duration reached.")
-                        break
-
-                    step_advance = args.steps_per_inference if args.steps_per_inference is not None else len(actions)
-                    iter_idx += max(1, step_advance)
-                    t_cycle_end = loop_start + iter_idx * dt
-                    precise_wait(t_cycle_end)
+                finally:
+                    if async_worker is not None:
+                        async_worker.close()
 
 
 def main(args: Args) -> None:
@@ -365,5 +496,7 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
+    import tyro
+
     logging.basicConfig(level=logging.INFO, force=True)
     main(tyro.cli(Args))
