@@ -15,6 +15,8 @@ from openpi_client import websocket_client_policy
 import tyro
 import yaml
 
+from deploy import telemetry as _telemetry
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,8 @@ class Args:
     observe_only: bool = False
     no_execute: bool = False
     show_camera: bool = True
+    record_episode: bool = False
+    telemetry_path: pathlib.Path | None = None
 
 
 def _load_robot_config(path: pathlib.Path) -> dict:
@@ -180,11 +184,40 @@ def _connect_policy(args: Args) -> websocket_client_policy.WebsocketClientPolicy
     return policy
 
 
+def _resolve_telemetry_path(args: Args) -> pathlib.Path:
+    if args.telemetry_path is not None:
+        return args.telemetry_path
+    return args.output_dir / "telemetry" / "inference.jsonl"
+
+
 def _run_dry(args: Args) -> None:
     policy = _connect_policy(args)
-    result = policy.infer(_fake_policy_observation(args.prompt))
+    policy_obs = _fake_policy_observation(args.prompt)
+    infer_start = time.perf_counter()
+    wall_time = time.time()
+    result = policy.infer(policy_obs)
+    infer_ms = 1000 * (time.perf_counter() - infer_start)
     actions = _normalize_action_chunk(result)
-    logger.info("Dry-run action chunk shape: %s", actions.shape)
+    telemetry_path = _resolve_telemetry_path(args)
+    with _telemetry.InferenceTelemetryRecorder(telemetry_path) as telemetry_recorder:
+        telemetry_recorder.write(
+            _telemetry.build_inference_record(
+                iteration=0,
+                loop_step=0,
+                wall_time=wall_time,
+                obs_timestamp=wall_time,
+                inference_latency_ms=infer_ms,
+                actions=actions,
+                scheduled_actions=np.empty((0, actions.shape[1]), dtype=np.float32),
+                scheduled_timestamps=np.empty((0,), dtype=np.float64),
+                state=policy_obs["observation/state"],
+                no_execute=True,
+                steps_per_inference=args.steps_per_inference,
+            )
+        )
+    logger.info(
+        "Dry-run action chunk shape: %s, inference %.1f ms, telemetry=%s", actions.shape, infer_ms, telemetry_path
+    )
 
 
 def _run_real(args: Args) -> None:
@@ -204,99 +237,124 @@ def _run_real(args: Args) -> None:
         show_camera = False
 
     dt = 1.0 / args.frequency
+    telemetry_path = _resolve_telemetry_path(args)
     with SharedMemoryManager() as shm_manager:
-        with BimanualUmiEnv(
-            output_dir=args.output_dir,
-            cameras_config=cameras_config,
-            robots_config=robots_config,
-            grippers_config=grippers_config,
-            frequency=args.frequency,
-            camera_obs_latency=args.camera_obs_latency,
-            camera_obs_horizon=1,
-            robot_obs_horizon=1,
-            gripper_obs_horizon=1,
-            max_pos_speed=args.max_pos_speed,
-            max_rot_speed=args.max_rot_speed,
-            shm_manager=shm_manager,
-        ) as env:
-            logger.info("Waiting for camera and robot buffers.")
-            time.sleep(1.0)
-            eval_start_time = time.time()
-            loop_start = time.monotonic()
-            iter_idx = 0
+        with _telemetry.InferenceTelemetryRecorder(telemetry_path) as telemetry_recorder:
+            with BimanualUmiEnv(
+                output_dir=args.output_dir,
+                cameras_config=cameras_config,
+                robots_config=robots_config,
+                grippers_config=grippers_config,
+                frequency=args.frequency,
+                camera_obs_latency=args.camera_obs_latency,
+                camera_obs_horizon=1,
+                robot_obs_horizon=1,
+                gripper_obs_horizon=1,
+                max_pos_speed=args.max_pos_speed,
+                max_rot_speed=args.max_rot_speed,
+                shm_manager=shm_manager,
+            ) as env:
+                logger.info("Waiting for camera and robot buffers.")
+                time.sleep(1.0)
+                eval_start_time = time.time()
+                if args.record_episode:
+                    env.start_episode(start_time=eval_start_time)
+                    logger.info("Recording replay buffer under %s", args.output_dir / "replay_buffer.zarr")
+                logger.info("Writing inference telemetry to %s", telemetry_path)
+                loop_start = time.monotonic()
+                iter_idx = 0
+                inference_idx = 0
 
-            while True:
-                obs = env.get_obs()
+                while True:
+                    obs = env.get_obs()
 
-                policy_obs = _policy_observation_from_env_obs(obs, args.prompt)
-                if show_camera:
-                    try:
-                        if _show_camera(obs, policy_obs["observation/image"]):
-                            logger.info("ESC pressed; stopping.")
+                    policy_obs = _policy_observation_from_env_obs(obs, args.prompt)
+                    if show_camera:
+                        try:
+                            if _show_camera(obs, policy_obs["observation/image"]):
+                                logger.info("ESC pressed; stopping.")
+                                break
+                        except Exception as exc:
+                            logger.warning("cv2.imshow failed (%s); disabling camera window.", exc)
+                            show_camera = False
+                    logger.info(
+                        "obs state=%s image_shape=%s",
+                        np.array2string(policy_obs["observation/state"], precision=4),
+                        policy_obs["observation/image"].shape,
+                    )
+
+                    if args.observe_only:
+                        iter_idx += 1
+                        t_cycle_end = loop_start + iter_idx * dt
+                        if time.time() - eval_start_time > args.max_duration:
+                            logger.info("Max duration reached.")
                             break
-                    except Exception as exc:
-                        logger.warning("cv2.imshow failed (%s); disabling camera window.", exc)
-                        show_camera = False
-                logger.info(
-                    "obs state=%s image_shape=%s",
-                    np.array2string(policy_obs["observation/state"], precision=4),
-                    policy_obs["observation/image"].shape,
-                )
+                        precise_wait(t_cycle_end)
+                        continue
 
-                if args.observe_only:
-                    iter_idx += 1
-                    t_cycle_end = loop_start + iter_idx * dt
+                    infer_start = time.perf_counter()
+                    wall_time = time.time()
+                    result = policy.infer(policy_obs)
+                    actions = _normalize_action_chunk(result)
+                    actions = _apply_safety_filters(actions, robot_config)
+                    state = policy_obs["observation/state"]
+                    infer_ms = 1000 * (time.perf_counter() - infer_start)
+
+                    scheduled_actions, timestamps = _future_action_schedule(
+                        actions=actions,
+                        obs_timestamp=float(obs["timestamp"][-1]),
+                        eval_start_time=eval_start_time,
+                        frequency=args.frequency,
+                        action_exec_latency=args.action_exec_latency,
+                    )
+                    max_scheduled_actions = args.max_scheduled_actions
+                    if max_scheduled_actions is None:
+                        max_scheduled_actions = args.steps_per_inference
+                    if max_scheduled_actions is not None:
+                        scheduled_actions = scheduled_actions[:max_scheduled_actions]
+                        timestamps = timestamps[:max_scheduled_actions]
+
+                    telemetry_recorder.write(
+                        _telemetry.build_inference_record(
+                            iteration=inference_idx,
+                            loop_step=iter_idx,
+                            wall_time=wall_time,
+                            obs_timestamp=float(obs["timestamp"][-1]),
+                            inference_latency_ms=infer_ms,
+                            actions=actions,
+                            scheduled_actions=scheduled_actions,
+                            scheduled_timestamps=timestamps,
+                            state=state,
+                            no_execute=args.no_execute,
+                            steps_per_inference=args.steps_per_inference,
+                        )
+                    )
+                    inference_idx += 1
+
+                    logger.info(
+                        "inference %.1f ms, got %d actions, scheduled %d%s, first_delta=%s, last_delta=%s",
+                        infer_ms,
+                        len(actions),
+                        len(scheduled_actions),
+                        " (no-execute)" if args.no_execute else "",
+                        np.array2string(actions[0, :6] - state[:6], precision=4),
+                        np.array2string(actions[-1, :6] - state[:6], precision=4),
+                    )
+                    if not args.no_execute:
+                        env.exec_actions(
+                            actions=scheduled_actions,
+                            timestamps=timestamps,
+                            compensate_latency=True,
+                        )
+
                     if time.time() - eval_start_time > args.max_duration:
                         logger.info("Max duration reached.")
                         break
+
+                    step_advance = args.steps_per_inference if args.steps_per_inference is not None else len(actions)
+                    iter_idx += max(1, step_advance)
+                    t_cycle_end = loop_start + iter_idx * dt
                     precise_wait(t_cycle_end)
-                    continue
-
-                infer_start = time.perf_counter()
-                result = policy.infer(policy_obs)
-                actions = _normalize_action_chunk(result)
-                actions = _apply_safety_filters(actions, robot_config)
-                state = policy_obs["observation/state"]
-                infer_ms = 1000 * (time.perf_counter() - infer_start)
-
-                scheduled_actions, timestamps = _future_action_schedule(
-                    actions=actions,
-                    obs_timestamp=float(obs["timestamp"][-1]),
-                    eval_start_time=eval_start_time,
-                    frequency=args.frequency,
-                    action_exec_latency=args.action_exec_latency,
-                )
-                max_scheduled_actions = args.max_scheduled_actions
-                if max_scheduled_actions is None:
-                    max_scheduled_actions = args.steps_per_inference
-                if max_scheduled_actions is not None:
-                    scheduled_actions = scheduled_actions[:max_scheduled_actions]
-                    timestamps = timestamps[:max_scheduled_actions]
-
-                logger.info(
-                    "inference %.1f ms, got %d actions, scheduled %d%s, first_delta=%s, last_delta=%s",
-                    infer_ms,
-                    len(actions),
-                    len(scheduled_actions),
-                    " (no-execute)" if args.no_execute else "",
-                    np.array2string(actions[0, :6] - state[:6], precision=4),
-                    np.array2string(actions[-1, :6] - state[:6], precision=4),
-                )
-                if not args.no_execute:
-                    env.exec_actions(
-                        actions=scheduled_actions,
-                        timestamps=timestamps,
-                        compensate_latency=True,
-                    )
-
-                if time.time() - eval_start_time > args.max_duration:
-                    logger.info("Max duration reached.")
-                    break
-
-                step_advance = args.steps_per_inference if args.steps_per_inference is not None else len(actions)
-                iter_idx += max(1, step_advance)
-                t_cycle_end = loop_start + iter_idx * dt
-                precise_wait(t_cycle_end)
 
 
 def main(args: Args) -> None:

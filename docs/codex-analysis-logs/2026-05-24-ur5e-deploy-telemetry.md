@@ -1,0 +1,41 @@
+# Project Analysis Log: UR5e Deploy Telemetry
+
+- Date: 2026-05-24
+- Owner: Codex
+- Scope: `deploy/`, `src/openpi/policies/umi_ur5e_policy.py`, UR5e real-robot deployment tooling
+
+## Context
+- User request: research how to measure model inference latency, real-time action chunk counts, and visualize UR5e trajectory plus gripper opening state during true UR5e deployment experiments.
+- Initial assumptions: the target path is the `4070-20_04` branch deployment flow under `deploy/inference_real.py`; changes should be committed after meaningful milestones.
+
+## Timeline
+
+### 16:52 Step 1 - Start Analysis Log
+- Action: Created this analysis log before deep code exploration.
+- Evidence (files/commands/output): `mkdir -p docs/codex-analysis-logs`; log file under `docs/codex-analysis-logs/`.
+- Observation: User explicitly requested research plus careful git management, so the work should leave a durable engineering record and commits.
+- Adjustment: Plan to implement small, testable telemetry utilities instead of only giving prose.
+- Rationale: The deployment loop already logs some transient values, but experiment analysis needs persistent structured data.
+- Next: Inspect deployment loop, environment observation/action recording, and existing tests.
+
+### 16:53 Step 2 - Read Deployment Loop And Recording Path
+- Action: Inspected `deploy/inference_real.py`, `deploy/umi/real_world/bimanual_umi_env.py`, replay buffer references, and existing tests.
+- Evidence (files/commands/output): `nl -ba deploy/inference_real.py`; `nl -ba deploy/umi/real_world/bimanual_umi_env.py`; `rg "replay_buffer|start_episode|exec_actions|get_obs" deploy`; `rg --files | rg 'test'`.
+- Observation: `deploy/inference_real.py` already computes transient `infer_ms`, `len(actions)`, and `len(scheduled_actions)` in the loop, but only logs them. `BimanualUmiEnv` can persist action, EEF pose, joint, and gripper width into `replay_buffer.zarr`, but only after `start_episode()` is called; current real deployment entrypoint never calls it.
+- Adjustment: Add explicit structured telemetry and a `--record-episode` switch instead of relying on console logs.
+- Rationale: Console logs are hard to post-process and do not provide a stable input for trajectory/gripper visualization.
+- Next: Write failing tests for JSONL telemetry records and trajectory plotting data preparation.
+
+### 16:56 Step 3 - RED Tests For Telemetry And Plotting
+- Action: Added tests for JSONL inference telemetry and trajectory/gripper data preparation, then ran them before implementation.
+- Evidence (files/commands/output): `.venv/bin/python -m pytest deploy/telemetry_test.py deploy/plot_umi_trajectory_test.py` exited with collection errors: `No module named 'deploy.telemetry'` and `No module named 'deploy.plot_umi_trajectory'`.
+- Observation: The tests correctly describe missing modules rather than passing against existing behavior.
+- Adjustment: Use a minimal local `.venv` with only `pytest numpy` for focused tests instead of full `uv sync`.
+- Rationale: Full sync started downloading large training/GPU dependencies; the focused tests only need pytest and NumPy.
+- Next: Implement the tested modules and wire telemetry into `deploy/inference_real.py`.
+
+## Final Summary
+- What was confirmed:
+- What changed from initial plan:
+- Open risks or unknowns:
+- Recommended next actions:
