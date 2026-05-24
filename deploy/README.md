@@ -2,6 +2,8 @@
 
 This directory contains a self-contained real-robot listener for a single UMI UR5e setup with one UVC/GoPro camera and one WSG50 gripper.
 
+For the full Chinese usage guide covering sync/async inference, telemetry, and trajectory visualization, see [`docs/ur5e-real-deployment-usage.md`](../docs/ur5e-real-deployment-usage.md).
+
 Start the OpenPI policy server:
 
 ```bash
@@ -55,6 +57,21 @@ uv run --group umi deploy/inference_real.py \
   --max-duration=10
 ```
 
+Run async policy inference without executing actions:
+
+```bash
+uv run --group umi deploy/inference_real.py \
+  --policy-server-host=<server-ip> \
+  --policy-server-port=8000 \
+  --robot-config=deploy/configs/umi_ur5e_wsg50.yaml \
+  --prompt="<task instruction>" \
+  --no-execute \
+  --async-inference \
+  --inference-overlap-steps=3 \
+  --steps-per-inference=6 \
+  --max-duration=20
+```
+
 Inference telemetry is written as JSONL by default:
 
 ```text
@@ -69,6 +86,7 @@ Each line is one policy call and includes:
 - `executed_action_count`: number of scheduled actions actually sent to the robot; this is `0` when `--no-execute` is used.
 - `dropped_action_count`: `model_action_count - scheduled_action_count`.
 - `first_action`, `last_action`, `state`, and `scheduled_timestamps` for quick debugging.
+- Async runs additionally include `async_policy_call_ms`, `async_chunk_boundary_wait_ms`, `async_hidden_inference_ms`, `async_overlap_steps`, and `async_future_state_applied`.
 
 Use `--telemetry-path=<path>` to write the JSONL file somewhere else.
 
