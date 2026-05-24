@@ -34,6 +34,14 @@
 - Rationale: Full sync started downloading large training/GPU dependencies; the focused tests only need pytest and NumPy.
 - Next: Implement the tested modules and wire telemetry into `deploy/inference_real.py`.
 
+### 17:00 Step 4 - Implement Telemetry And Plotting
+- Action: Implemented `deploy/telemetry.py`, `deploy/plot_umi_trajectory.py`, wired telemetry and `--record-episode` into `deploy/inference_real.py`, formatted touched Python files, and committed the first implementation milestone.
+- Evidence (files/commands/output): `.venv/bin/python -m pytest deploy/telemetry_test.py deploy/plot_umi_trajectory_test.py` reported `6 passed`; formatter ran `ruff format`; commit `44a10ca Add UR5e deploy telemetry and trajectory plotting`.
+- Observation: Each inference can now emit JSONL records with latency, returned chunk size, scheduled chunk size, and executed chunk size; replay buffer recording can be enabled from the real deployment CLI; trajectory plotting is available as an offline utility.
+- Adjustment: Add README instructions for experiment operators before finalizing.
+- Rationale: The code paths are only useful if the exact run and post-processing commands are documented next to the deployment instructions.
+- Next: Update `deploy/README.md`, rerun focused tests, and commit documentation.
+
 ## Final Summary
 - What was confirmed:
 - What changed from initial plan:
