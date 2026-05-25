@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 import pathlib
@@ -5,6 +6,7 @@ from typing import Any
 
 import jax.numpy as jnp
 
+from openpi.models import lora_merge as _lora_merge
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
@@ -22,6 +24,7 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
+    lora_merge: _lora_merge.LoRAMergeMode | str = _lora_merge.LoRAMergeMode.AUTO,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -49,12 +52,27 @@ def create_trained_policy(
     weight_path = os.path.join(checkpoint_dir, "model.safetensors")
     is_pytorch = os.path.exists(weight_path)
 
+    lora_merge_mode = _lora_merge.normalize_lora_merge_mode(lora_merge)
     logging.info("Loading model...")
     if is_pytorch:
+        if lora_merge_mode is _lora_merge.LoRAMergeMode.ON:
+            raise ValueError("LoRA merge is only supported for JAX checkpoints, not PyTorch safetensors checkpoints.")
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     else:
-        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+        params = _model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16)
+        params, model_config, merge_summary = _lora_merge.maybe_merge_lora_params(
+            params,
+            train_config.model,
+            mode=lora_merge_mode,
+        )
+        if merge_summary.merged:
+            train_config = dataclasses.replace(train_config, model=model_config)
+            logging.info(
+                "Using LoRA-merged model config for inference (%d merged parameter pairs).",
+                merge_summary.merged_count,
+            )
+        model = train_config.model.load(params)
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -66,7 +84,7 @@ def create_trained_policy(
     # Determine the device to use for PyTorch models
     if is_pytorch and pytorch_device is None:
         try:
-            import torch
+            import torch  # noqa: PLC0415
 
             pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:

@@ -9,6 +9,7 @@
 ```bash
 uv run scripts/serve_policy.py \
   --port=8000 \
+  --lora-merge=auto \
   policy:checkpoint \
   --policy.config=pi0_umi_ur5e_pick_place_lora \
   --policy.dir=checkpoints/openpi-ur5e-lora/pi0_pick_place/29999
@@ -19,10 +20,17 @@ conveyor checkpoint 示例：
 ```bash
 uv run scripts/serve_policy.py \
   --port=8000 \
+  --lora-merge=auto \
   policy:checkpoint \
   --policy.config=pi0_umi_ur5e_conveyor_lora \
   --policy.dir=checkpoints/openpi-ur5e-lora/pi0_conveyor/29999
 ```
+
+LoRA merge 开关在 policy server 端：
+
+- `--lora-merge=auto`: 默认值。如果 checkpoint 和 config 都包含可合并的 LoRA 参数，加载时自动折叠到非 LoRA 主权重；否则保持原行为。
+- `--lora-merge=on`: 强制合并。若不是 JAX LoRA checkpoint，或没有可合并的 LoRA 参数，会报错。
+- `--lora-merge=off`: 不合并。推理时继续走 base 分支 + LoRA 分支实时相加。
 
 先做一次 server-only smoke test：
 

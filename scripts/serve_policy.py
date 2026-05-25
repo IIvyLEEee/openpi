@@ -1,4 +1,5 @@
-import datasets  # workaround import-order segfault on 20.04
+# ruff: noqa: I001
+import datasets  # noqa: F401  # workaround import-order segfault on 20.04
 import dataclasses
 import enum
 import logging
@@ -6,6 +7,7 @@ import socket
 
 import tyro
 
+from openpi.models import lora_merge as _lora_merge
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
@@ -55,6 +57,8 @@ class Args:
     num_steps: int | None = None
     # Print each diffusion/flow-matching denoising step during inference.
     log_denoise_steps: bool = False
+    # Controls whether LoRA checkpoints are folded into base weights at policy load time.
+    lora_merge: _lora_merge.LoRAMergeMode = _lora_merge.LoRAMergeMode.AUTO
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -102,6 +106,7 @@ def create_default_policy(args: Args) -> _policy.Policy:
             checkpoint.dir,
             default_prompt=args.default_prompt,
             sample_kwargs=_sample_kwargs(args),
+            lora_merge=args.lora_merge,
         )
     raise ValueError(f"Unsupported environment mode: {args.env}")
 
@@ -115,6 +120,7 @@ def create_policy(args: Args) -> _policy.Policy:
                 args.policy.dir,
                 default_prompt=args.default_prompt,
                 sample_kwargs=_sample_kwargs(args),
+                lora_merge=args.lora_merge,
             )
         case Default():
             return create_default_policy(args)

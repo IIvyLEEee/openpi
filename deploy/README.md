@@ -9,6 +9,7 @@ Start the OpenPI policy server:
 ```bash
 uv run scripts/serve_policy.py \
   --port=8000 \
+  --lora-merge=auto \
   policy:checkpoint \
   --policy.config=pi0_umi_ur5e_pick_place_lora \
   --policy.dir=checkpoints/openpi-ur5e-lora/pi0_pick_place/29999
@@ -19,10 +20,13 @@ For the conveyor checkpoint, use the matching conveyor config:
 ```bash
 uv run scripts/serve_policy.py \
   --port=8000 \
+  --lora-merge=auto \
   policy:checkpoint \
   --policy.config=pi0_umi_ur5e_conveyor_lora \
   --policy.dir=checkpoints/openpi-ur5e-lora/pi0_conveyor/29999
 ```
+
+Use `--lora-merge=auto|on|off` on the policy server to control whether JAX LoRA checkpoints are folded into non-LoRA base weights at load time. `auto` is the default.
 
 Run a server-only smoke test:
 
