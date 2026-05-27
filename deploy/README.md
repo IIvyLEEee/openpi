@@ -26,6 +26,8 @@ uv run scripts/serve_policy.py \
   --policy.dir=checkpoints/openpi-ur5e-lora/pi0_conveyor/29999
 ```
 
+For pi0.5, keep the same real-robot client and switch only the policy server config/checkpoint, for example `--policy.config=pi05_umi_ur5e_pick_place_lora`.
+
 Use `--lora-merge=auto|on|off` on the policy server to control whether JAX LoRA checkpoints are folded into non-LoRA base weights at load time. `auto` is the default.
 
 Run a server-only smoke test:
@@ -47,6 +49,8 @@ uv run --group umi deploy/inference_real.py \
 ```
 
 By default this opens an OpenCV window showing `raw | policy`: the raw camera frame and the frame sent to OpenPI. The listener applies the UMI gripper mask before sending the image to OpenPI. Press `Esc` in the window to stop. Use `--no-show-camera` to disable the window.
+
+The RTDE controller keeps UMI's interpolated `servoL` behavior and converts targets between the UMI unified frame and the robot base frame when `unified_tx` is configured. Add `--init-joints` if you want startup to move a single UR5e to UMI's default `[0, -90, -90, -90, 90, 0]` degree joint pose before running.
 
 Run policy inference without executing actions:
 

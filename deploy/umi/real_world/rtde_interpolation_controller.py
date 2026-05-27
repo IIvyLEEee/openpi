@@ -1,21 +1,20 @@
 import enum
 import multiprocessing as mp
+from multiprocessing.managers import SharedMemoryManager
 import os
 import time
-from multiprocessing.managers import SharedMemoryManager
 
 import numpy as np
 from rtde_control import RTDEControlInterface
 from rtde_receive import RTDEReceiveInterface
 
-from deploy.umi_data.pose_util import mat_to_pose, pose_to_mat
-from deploy.umi.common.pose_trajectory_interpolator import \
-    PoseTrajectoryInterpolator
+from deploy.umi.common.pose_trajectory_interpolator import PoseTrajectoryInterpolator
 from deploy.umi.common.precise_sleep import precise_wait
-from deploy.umi.shared_memory.shared_memory_queue import (Empty,
-                                                          SharedMemoryQueue)
-from deploy.umi.shared_memory.shared_memory_ring_buffer import \
-    SharedMemoryRingBuffer
+from deploy.umi.shared_memory.shared_memory_queue import Empty
+from deploy.umi.shared_memory.shared_memory_queue import SharedMemoryQueue
+from deploy.umi.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
+from deploy.umi_data.pose_util import mat_to_pose
+from deploy.umi_data.pose_util import pose_to_mat
 
 
 def apply_tx_to_6d_pose(pose, tx_mat):
@@ -31,34 +30,54 @@ class Command(enum.Enum):
     SCHEDULE_WAYPOINT = 2
 
 
+def _apply_servol_command(
+    *,
+    command,
+    pose_interp,
+    t_now,
+    dt,
+    max_pos_speed,
+    max_rot_speed,
+    pose_to_robot_frame,
+):
+    target_pose = np.array(pose_to_robot_frame(command["target_pose"]), dtype=np.float64)
+    duration = float(command["duration"])
+    curr_time = t_now + dt
+    t_insert = curr_time + duration
+    pose_interp = pose_interp.drive_to_waypoint(
+        pose=target_pose, time=t_insert, curr_time=curr_time, max_pos_speed=max_pos_speed, max_rot_speed=max_rot_speed
+    )
+    return pose_interp, t_insert
+
+
 class RTDEInterpolationController(mp.Process):
     """
     To ensure sending command to the robot with predictable latency
     this controller need its separate process (due to python GIL)
     """
 
-
-    def __init__(self,
-            shm_manager: SharedMemoryManager,
-            robot_ip,
-            frequency=125,
-            lookahead_time=0.1,
-            gain=300,
-            max_pos_speed=0.25, # 5% of max speed
-            max_rot_speed=0.16, # 5% of max speed
-            launch_timeout=3,
-            tcp_offset_pose=None,
-            payload_mass=None,
-            payload_cog=None,
-            joints_init=None,
-            joints_init_speed=1.05,
-            soft_real_time=False,
-            verbose=False,
-            receive_keys=None,
-            get_max_k=None,
-            receive_latency=0.0,
-            unified_tx=None,
-        ):
+    def __init__(
+        self,
+        shm_manager: SharedMemoryManager,
+        robot_ip,
+        frequency=125,
+        lookahead_time=0.1,
+        gain=300,
+        max_pos_speed=0.25,  # 5% of max speed
+        max_rot_speed=0.16,  # 5% of max speed
+        launch_timeout=3,
+        tcp_offset_pose=None,
+        payload_mass=None,
+        payload_cog=None,
+        joints_init=None,
+        joints_init_speed=1.05,
+        soft_real_time=False,
+        verbose=False,
+        receive_keys=None,
+        get_max_k=None,
+        receive_latency=0.0,
+        unified_tx=None,
+    ):
         """
         frequency: CB2=125, UR3e=500
         lookahead_time: [0.03, 0.2]s smoothens the trajectory with this lookahead time
@@ -113,42 +132,37 @@ class RTDEInterpolationController(mp.Process):
 
         # build input queue
         example = {
-            'cmd': Command.SERVOL.value,
-            'target_pose': np.zeros((6,), dtype=np.float64),
-            'duration': 0.0,
-            'target_time': 0.0
+            "cmd": Command.SERVOL.value,
+            "target_pose": np.zeros((6,), dtype=np.float64),
+            "duration": 0.0,
+            "target_time": 0.0,
         }
-        input_queue = SharedMemoryQueue.create_from_examples(
-            shm_manager=shm_manager,
-            examples=example,
-            buffer_size=256
-        )
+        input_queue = SharedMemoryQueue.create_from_examples(shm_manager=shm_manager, examples=example, buffer_size=256)
 
         # build ring buffer
         if receive_keys is None:
             receive_keys = [
-                'ActualTCPPose',
-                'ActualTCPSpeed',
-                'ActualQ',
-                'ActualQd',
-
-                'TargetTCPPose',
-                'TargetTCPSpeed',
-                'TargetQ',
-                'TargetQd'
+                "ActualTCPPose",
+                "ActualTCPSpeed",
+                "ActualQ",
+                "ActualQd",
+                "TargetTCPPose",
+                "TargetTCPSpeed",
+                "TargetQ",
+                "TargetQd",
             ]
         rtde_r = RTDEReceiveInterface(hostname=robot_ip)
         example = dict()
         for key in receive_keys:
-            example[key] = np.array(getattr(rtde_r, 'get'+key)())
-        example['robot_receive_timestamp'] = time.time()
-        example['robot_timestamp'] = time.time()
+            example[key] = np.array(getattr(rtde_r, "get" + key)())
+        example["robot_receive_timestamp"] = time.time()
+        example["robot_timestamp"] = time.time()
         ring_buffer = SharedMemoryRingBuffer.create_from_examples(
             shm_manager=shm_manager,
             examples=example,
             get_max_k=get_max_k,
             get_time_budget=0.2,
-            put_desired_frequency=frequency
+            put_desired_frequency=frequency,
         )
 
         self.ready_event = mp.Event()
@@ -157,11 +171,11 @@ class RTDEInterpolationController(mp.Process):
         self.receive_keys = receive_keys
 
         if unified_tx is not None:
-            print('[DBG] unified tx will be applied')
+            print("[DBG] unified tx will be applied")
             self.unified_tx = np.array(unified_tx)
             self.unified_tx_inv = np.linalg.inv(unified_tx)
-            print('[DBG]', self.unified_tx)
-            print('[DBG]', self.unified_tx_inv)
+            print("[DBG]", self.unified_tx)
+            print("[DBG]", self.unified_tx_inv)
         else:
             self.unified_tx = None
             self.unified_tx_inv = None
@@ -187,9 +201,7 @@ class RTDEInterpolationController(mp.Process):
             print(f"[RTDEPositionalController] Controller process spawned at {self.pid}")
 
     def stop(self, wait=True):
-        message = {
-            'cmd': Command.STOP.value
-        }
+        message = {"cmd": Command.STOP.value}
         self.input_queue.put(message)
         if wait:
             self.stop_wait()
@@ -219,26 +231,18 @@ class RTDEInterpolationController(mp.Process):
         duration: desired time to reach pose
         """
         assert self.is_alive()
-        assert(duration >= (1/self.frequency))
+        assert duration >= (1 / self.frequency)
         pose = np.array(pose)
         assert pose.shape == (6,)
 
-        message = {
-            'cmd': Command.SERVOL.value,
-            'target_pose': pose,
-            'duration': duration
-        }
+        message = {"cmd": Command.SERVOL.value, "target_pose": pose, "duration": duration}
         self.input_queue.put(message)
 
     def schedule_waypoint(self, pose, target_time):
         pose = np.array(pose)
         assert pose.shape == (6,)
 
-        message = {
-            'cmd': Command.SCHEDULE_WAYPOINT.value,
-            'target_pose': pose,
-            'target_time': target_time
-        }
+        message = {"cmd": Command.SCHEDULE_WAYPOINT.value, "target_pose": pose, "target_time": target_time}
         self.input_queue.put(message)
 
     # ========= receive APIs =============
@@ -246,7 +250,7 @@ class RTDEInterpolationController(mp.Process):
         if k is None:
             return self.ring_buffer.get(out=out)
         else:
-            return self.ring_buffer.get_last_k(k=k,out=out)
+            return self.ring_buffer.get_last_k(k=k, out=out)
 
     def get_all_state(self):
         return self.ring_buffer.get_all()
@@ -255,8 +259,7 @@ class RTDEInterpolationController(mp.Process):
     def run(self):
         # enable soft real-time
         if self.soft_real_time:
-            os.sched_setscheduler(
-                0, os.SCHED_RR, os.sched_param(20))
+            os.sched_setscheduler(0, os.SCHED_RR, os.sched_param(20))
 
         # start rtde
         robot_ip = self.robot_ip
@@ -281,16 +284,13 @@ class RTDEInterpolationController(mp.Process):
                 assert rtde_c.moveJ(self.joints_init, self.joints_init_speed, 1.4)
 
             # main loop
-            dt = 1. / self.frequency
-            curr_pose = rtde_r.getActualTCPPose()   # in arm's base frame
+            dt = 1.0 / self.frequency
+            curr_pose = rtde_r.getActualTCPPose()  # in arm's base frame
             # use monotonic time to make sure the control loop never go backward
             curr_t = time.monotonic()
             last_waypoint_time = curr_t
             # calculate interpolation in base frame
-            pose_interp = PoseTrajectoryInterpolator(
-                times=[curr_t],
-                poses=[curr_pose]
-            )
+            pose_interp = PoseTrajectoryInterpolator(times=[curr_t], poses=[curr_pose])
 
             t_start = time.monotonic()
             iter_idx = 0
@@ -308,26 +308,31 @@ class RTDEInterpolationController(mp.Process):
                 pose_command = pose_interp(t_now)
                 vel = 0.5
                 acc = 0.5
-                assert rtde_c.servoL(pose_command,
-                    vel, acc, # dummy, not used by ur5
+                assert rtde_c.servoL(
+                    pose_command,
+                    vel,
+                    acc,  # dummy, not used by ur5
                     dt,
                     self.lookahead_time,
-                    self.gain)
+                    self.gain,
+                )
 
                 # update robot state
                 state = dict()
                 for key in self.receive_keys:
-                    state[key] = np.array(getattr(rtde_r, 'get'+key)())
+                    state[key] = np.array(getattr(rtde_r, "get" + key)())
                 t_recv = time.time()
-                state['robot_receive_timestamp'] = t_recv
-                state['robot_timestamp'] = t_recv - self.receive_latency
+                state["robot_receive_timestamp"] = t_recv
+                state["robot_timestamp"] = t_recv - self.receive_latency
                 # HACK: since velocity and force is not used
                 # we do not apply transformation to them
                 # convert actualTCPPose to unified frame (umi coordination system)
-                state['ActualTCPPose'] = self.convert_pose_to_unified_frame(
-                    state['ActualTCPPose'], backward=False) # to unified frame
-                state['TargetTCPPose'] = self.convert_pose_to_unified_frame(
-                    state['TargetTCPPose'], backward=False) # to unified frame
+                state["ActualTCPPose"] = self.convert_pose_to_unified_frame(
+                    state["ActualTCPPose"], backward=False
+                )  # to unified frame
+                state["TargetTCPPose"] = self.convert_pose_to_unified_frame(
+                    state["TargetTCPPose"], backward=False
+                )  # to unified frame
                 self.ring_buffer.put(state)
 
                 # fetch command from queue
@@ -336,7 +341,7 @@ class RTDEInterpolationController(mp.Process):
                     # n_cmd = len(commands['cmd'])
                     # process at most 1 command per cycle to maintain frequency
                     commands = self.input_queue.get_k(1)
-                    n_cmd = len(commands['cmd'])
+                    n_cmd = len(commands["cmd"])
                 except Empty:
                     n_cmd = 0
 
@@ -345,7 +350,7 @@ class RTDEInterpolationController(mp.Process):
                     command = dict()
                     for key, value in commands.items():
                         command[key] = value[i]
-                    cmd = command['cmd']
+                    cmd = command["cmd"]
 
                     if cmd == Command.STOP.value:
                         keep_running = False
@@ -356,29 +361,26 @@ class RTDEInterpolationController(mp.Process):
                         # if we start the next interpolation with curr_pose
                         # the command robot receive will have discontinouity
                         # and cause jittery robot behavior.
-                        # FIXME: unified_tx is not applied here
-                        assert False, 'SERVOL is not supported in this controller'
-                        target_pose = command['target_pose']
-                        duration = float(command['duration'])
-                        curr_time = t_now + dt
-                        t_insert = curr_time + duration
-                        pose_interp = pose_interp.drive_to_waypoint(
-                            pose=target_pose,
-                            time=t_insert,
-                            curr_time=curr_time,
+                        pose_interp, last_waypoint_time = _apply_servol_command(
+                            command=command,
+                            pose_interp=pose_interp,
+                            t_now=t_now,
+                            dt=dt,
                             max_pos_speed=self.max_pos_speed,
-                            max_rot_speed=self.max_rot_speed
+                            max_rot_speed=self.max_rot_speed,
+                            pose_to_robot_frame=lambda pose: self.convert_pose_to_unified_frame(pose, backward=True),
                         )
-                        last_waypoint_time = t_insert
                         if self.verbose:
-                            print("[RTDEPositionalController] New pose target:{} duration:{}s".format(
-                                target_pose, duration))
+                            print(
+                                "[RTDEPositionalController] New pose target:{} duration:{}s".format(
+                                    command["target_pose"], float(command["duration"])
+                                )
+                            )
                     elif cmd == Command.SCHEDULE_WAYPOINT.value:
-                        target_pose = command['target_pose']
+                        target_pose = command["target_pose"]
                         # convert back to robot's base frame
-                        target_pose = self.convert_pose_to_unified_frame(
-                            target_pose, backward=True)
-                        target_time = float(command['target_time'])
+                        target_pose = self.convert_pose_to_unified_frame(target_pose, backward=True)
+                        target_time = float(command["target_time"])
                         # translate global time to monotonic time
                         target_time = time.monotonic() - time.time() + target_time
                         curr_time = t_now + dt
@@ -388,7 +390,7 @@ class RTDEInterpolationController(mp.Process):
                             max_pos_speed=self.max_pos_speed,
                             max_rot_speed=self.max_rot_speed,
                             curr_time=curr_time,
-                            last_waypoint_time=last_waypoint_time
+                            last_waypoint_time=last_waypoint_time,
                         )
                         last_waypoint_time = target_time
                     else:
@@ -406,7 +408,7 @@ class RTDEInterpolationController(mp.Process):
                 iter_idx += 1
 
                 if self.verbose:
-                    print(f"[RTDEPositionalController] Actual frequency {1/(time.monotonic() - t_now)}")
+                    print(f"[RTDEPositionalController] Actual frequency {1 / (time.monotonic() - t_now)}")
 
         finally:
             # manditory cleanup

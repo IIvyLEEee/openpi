@@ -44,6 +44,7 @@ class Args:
     async_inference: bool = False
     inference_overlap_steps: int = 0
     async_future_state: bool = True
+    init_joints: bool = False
 
 
 @dataclasses.dataclass
@@ -292,6 +293,7 @@ def _run_real(args: Args) -> None:
                 gripper_obs_horizon=1,
                 max_pos_speed=args.max_pos_speed,
                 max_rot_speed=args.max_rot_speed,
+                init_joints=args.init_joints,
                 shm_manager=shm_manager,
             ) as env:
                 logger.info("Waiting for camera and robot buffers.")

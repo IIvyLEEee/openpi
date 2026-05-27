@@ -26,6 +26,17 @@ uv run scripts/serve_policy.py \
   --policy.dir=checkpoints/openpi-ur5e-lora/pi0_conveyor/29999
 ```
 
+pi0.5 使用同一套 UR5e 真机客户端，只需要把 policy config 和 checkpoint 换成 pi0.5：
+
+```bash
+uv run scripts/serve_policy.py \
+  --port=8000 \
+  --lora-merge=auto \
+  policy:checkpoint \
+  --policy.config=pi05_umi_ur5e_pick_place_lora \
+  --policy.dir=checkpoints/openpi-ur5e-lora/pi05_pick_place/29999
+```
+
 LoRA merge 开关在 policy server 端：
 
 - `--lora-merge=auto`: 默认值。如果 checkpoint 和 config 都包含可合并的 LoRA 参数，加载时自动折叠到非 LoRA 主权重；否则保持原行为。
@@ -42,6 +53,20 @@ uv run --group umi deploy/inference_real.py \
 ```
 
 `--dry-run` 只请求一次模型，不连接真机。
+
+## 1.1. UR5e RTDE 控制器行为
+
+当前真机客户端使用 UMI 的 RTDE 插值控制方式：控制器进程连接 UR5e 后会设置 TCP offset / payload，并以 UR5e 的 500Hz 循环持续向机器人发送 `servoL`。每个 action chunk 会通过 `schedule_waypoint()` 排入 `PoseTrajectoryInterpolator`，避免从滞后的实测 TCP pose 重新起轨导致抖动。
+
+如果 `deploy/configs/umi_ur5e_wsg50.yaml` 中配置了 `unified_tx`，观测到的 `ActualTCPPose` / `TargetTCPPose` 会从 robot base 转到 UMI unified frame；下发的 `schedule_waypoint()` 和 `servoL()` 目标会先从 unified frame 转回 robot base。这个路径与模型无关，因此 pi0 和 pi0.5 共用。
+
+默认不会移动到初始化关节位。如果需要在启动环境时先移动到 UMI 默认单臂 UR5e 姿态 `[0, -90, -90, -90, 90, 0]` 度，可以给 `deploy/inference_real.py` 加：
+
+```bash
+--init-joints
+```
+
+注意：`--init-joints` 在 `--observe-only` 和 `--no-execute` 下也会生效，因为它发生在环境启动阶段。
 
 ## 2. 观察硬件但不推理
 
