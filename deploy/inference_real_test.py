@@ -3,6 +3,7 @@ import pathlib
 import sys
 
 import numpy as np
+import pytest
 
 _OPENPI_CLIENT_SRC = pathlib.Path(__file__).resolve().parents[1] / "packages" / "openpi-client" / "src"
 if str(_OPENPI_CLIENT_SRC) not in sys.path:
@@ -13,6 +14,20 @@ from deploy import inference_real
 
 def test_record_episode_is_enabled_by_default():
     assert inference_real.Args().record_episode is True
+
+
+def test_inference_latency_scale_defaults_to_no_slowdown():
+    assert inference_real.Args().inference_latency_scale == 1.0
+
+
+def test_validate_runtime_args_rejects_latency_scale_below_one():
+    with pytest.raises(ValueError, match="inference-latency-scale"):
+        inference_real._validate_runtime_args(inference_real.Args(inference_latency_scale=0.5))
+
+
+def test_validate_runtime_args_rejects_nonfinite_latency_scale():
+    with pytest.raises(ValueError, match="inference-latency-scale"):
+        inference_real._validate_runtime_args(inference_real.Args(inference_latency_scale=float("inf")))
 
 
 def test_future_action_schedule_can_start_at_async_chunk_boundary(monkeypatch):

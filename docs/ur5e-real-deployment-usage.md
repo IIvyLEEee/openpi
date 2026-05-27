@@ -170,6 +170,29 @@ overlap_window_seconds = inference_overlap_steps / frequency
 
 例如默认 `frequency=10Hz`，`--inference-overlap-steps=3` 表示最多隐藏约 `300ms` 推理时间。`inference_overlap_steps` 不应大于实际排程动作数；代码会按当前 `scheduled_action_count` 做 clamp。
 
+## 4.1. 模拟更差推理硬件
+
+如果要模拟更慢 GPU、网络或 policy server，可以在真机客户端侧按比例拉长每次 `policy.infer()` 的 wall-clock 时间：
+
+```bash
+uv run --group umi deploy/inference_real.py \
+  --policy-server-host=<server-ip> \
+  --policy-server-port=8000 \
+  --robot-config=deploy/configs/umi_ur5e_wsg50.yaml \
+  --prompt="Pick up the red block and put it in the green box." \
+  --inference-latency-scale=2.0 \
+  --steps-per-inference=6 \
+  --max-duration=20
+```
+
+`--inference-latency-scale=1.0` 是默认值，不额外延迟。`2.0` 表示把实测推理耗时拉到约 2 倍，`1.5` 表示约 1.5 倍，`3.0` 表示约 3 倍。代码会先真实调用一次模型，测得 `policy.infer()` 的耗时，然后额外 sleep：
+
+```text
+extra_sleep = observed_inference_latency * (inference_latency_scale - 1)
+```
+
+这个参数对同步和异步推理都生效。同步模式下，`inference_latency_ms` 会包含额外 sleep；异步模式下，`async_policy_call_ms` 和对应的 `inference_latency_ms` 也会包含额外 sleep，因此可以用它压测 `--inference-overlap-steps` 是否足够隐藏更长推理时间。这个功能模拟的是推理请求变慢，不模拟显存不足、GPU kernel 抖动或服务器并发竞争。
+
 ## 5. 遥测文件和指标
 
 默认每次运行会生成一个带本地时间戳的 run id，并把该次运行的输出放在：
@@ -195,6 +218,7 @@ data/umi_real_inference/runs/<run_id>/run_metadata.json
 ```
 
 其中包含 prompt、frequency、`steps_per_inference`、async 设置、是否 `--record-episode`、机器人配置、policy server metadata。policy server 如果用当前分支的 `scripts/serve_policy.py` 启动，metadata 里会包含 `serve_policy.num_steps` 和 `serve_policy.log_denoise_steps`，用于记录当前去噪步数设置。
+如果使用了 `--inference-latency-scale`，该值会记录在 `runtime.inference_latency_scale`。
 
 基础字段：
 

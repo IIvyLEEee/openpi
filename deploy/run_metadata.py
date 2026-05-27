@@ -64,6 +64,7 @@ def _runtime_metadata(args) -> dict[str, Any]:
         "max_duration",
         "camera_obs_latency",
         "action_exec_latency",
+        "inference_latency_scale",
         "max_pos_speed",
         "max_rot_speed",
         "dry_run",

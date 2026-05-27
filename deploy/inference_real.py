@@ -1,6 +1,7 @@
 # ruff: noqa: E402, PLC0415, SIM117
 import dataclasses
 import logging
+import math
 from multiprocessing.managers import SharedMemoryManager
 import os
 import pathlib
@@ -14,6 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
 import numpy as np
 
 from deploy import async_inference as _async_inference
+from deploy import latency_simulation as _latency_simulation
 from deploy import run_metadata as _run_metadata
 from deploy import telemetry as _telemetry
 
@@ -34,6 +36,7 @@ class Args:
     max_duration: float = 120.0
     camera_obs_latency: float = 0.17
     action_exec_latency: float = 0.01
+    inference_latency_scale: float = 1.0
     max_pos_speed: float = 2.0
     max_rot_speed: float = 6.0
     dry_run: bool = False
@@ -192,6 +195,8 @@ def _truncate_scheduled_actions(
 def _validate_runtime_args(args: Args) -> None:
     if args.frequency <= 0:
         raise ValueError("--frequency must be positive.")
+    if not math.isfinite(args.inference_latency_scale) or args.inference_latency_scale < 1.0:
+        raise ValueError("--inference-latency-scale must be >= 1.0.")
     if args.async_inference and args.inference_overlap_steps <= 0:
         raise ValueError("--async-inference requires --inference-overlap-steps to be positive.")
 
@@ -228,9 +233,11 @@ def _connect_policy(args: Args):
 
 
 def _run_dry(args: Args) -> None:
+    _validate_runtime_args(args)
     run_id = _run_metadata.resolve_run_id(args)
     run_paths = _run_metadata.resolve_run_paths(args, run_id=run_id)
     policy = _connect_policy(args)
+    policy_infer = _latency_simulation.wrap_infer(policy.infer, latency_scale=args.inference_latency_scale)
     server_metadata = policy.get_server_metadata()
     _run_metadata.write_run_metadata(
         run_paths.metadata_path,
@@ -246,7 +253,7 @@ def _run_dry(args: Args) -> None:
     policy_obs = _fake_policy_observation(args.prompt)
     infer_start = time.perf_counter()
     wall_time = time.time()
-    result = policy.infer(policy_obs)
+    result = policy_infer(policy_obs)
     infer_ms = 1000 * (time.perf_counter() - infer_start)
     actions = _normalize_action_chunk(result)
     telemetry_path = run_paths.telemetry_path
@@ -287,6 +294,11 @@ def _run_real(args: Args) -> None:
 
     policy = None if args.observe_only else _connect_policy(args)
     server_metadata = policy.get_server_metadata() if policy is not None else {}
+    policy_infer = (
+        _latency_simulation.wrap_infer(policy.infer, latency_scale=args.inference_latency_scale)
+        if policy is not None
+        else None
+    )
     _run_metadata.write_run_metadata(
         run_paths.metadata_path,
         _run_metadata.build_run_metadata(
@@ -335,8 +347,8 @@ def _run_real(args: Args) -> None:
                 iter_idx = 0
                 inference_idx = 0
                 async_worker = (
-                    _async_inference.AsyncInferenceWorker(policy.infer)
-                    if policy is not None and args.async_inference
+                    _async_inference.AsyncInferenceWorker(policy_infer)
+                    if policy_infer is not None and args.async_inference
                     else None
                 )
                 pending_async: _PendingAsyncRequest | None = None
@@ -400,11 +412,11 @@ def _run_real(args: Args) -> None:
                                 precise_wait(t_cycle_end)
                                 continue
 
-                            if policy is None:
+                            if policy_infer is None:
                                 raise RuntimeError("Policy is not connected.")
                             infer_start = time.perf_counter()
                             wall_time = time.time()
-                            result = policy.infer(policy_obs)
+                            result = policy_infer(policy_obs)
                             infer_ms = 1000 * (time.perf_counter() - infer_start)
                             obs_timestamp = float(obs["timestamp"][-1])
                             state = policy_obs["observation/state"]

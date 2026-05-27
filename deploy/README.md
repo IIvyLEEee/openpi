@@ -80,6 +80,21 @@ uv run --group umi deploy/inference_real.py \
   --max-duration=20
 ```
 
+To simulate slower inference hardware from the real-robot client, scale each policy call's observed latency:
+
+```bash
+uv run --group umi deploy/inference_real.py \
+  --policy-server-host=<server-ip> \
+  --policy-server-port=8000 \
+  --robot-config=deploy/configs/umi_ur5e_wsg50.yaml \
+  --prompt="<task instruction>" \
+  --inference-latency-scale=2.0 \
+  --steps-per-inference=6 \
+  --max-duration=20
+```
+
+`--inference-latency-scale=1.0` is the default. `2.0` makes each `policy.infer()` call take about twice its measured latency by sleeping for `observed_latency * (scale - 1)`. The scaled delay is included in `inference_latency_ms` and, for async runs, `async_policy_call_ms`.
+
 Inference telemetry is written as JSONL by default:
 
 ```text

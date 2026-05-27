@@ -19,6 +19,7 @@ class _Args:
     max_scheduled_actions: int | None = None
     async_inference: bool = False
     inference_overlap_steps: int = 0
+    inference_latency_scale: float = 2.5
     async_future_state: bool = True
     record_episode: bool = True
     no_execute: bool = False
@@ -64,4 +65,5 @@ def test_build_run_metadata_records_paths_runtime_and_policy_steps(tmp_path):
     assert metadata["videos_dir"] == str(paths.videos_dir)
     assert metadata["runtime"]["prompt"] == "pick"
     assert metadata["runtime"]["steps_per_inference"] == 6
+    assert metadata["runtime"]["inference_latency_scale"] == 2.5
     assert metadata["policy_server_metadata"]["serve_policy"]["num_steps"] == 12
