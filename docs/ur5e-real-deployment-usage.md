@@ -112,6 +112,8 @@ uv run --group umi deploy/inference_real.py \
   --max-duration=60 2>&1 | tee "$LOG"
 ```
 
+`--record-episode` 现在默认开启；上面的参数可以保留，也可以省略。若只想保存 telemetry / metadata，不想保存 replay buffer 和相机视频，使用 `--no-record-episode`。
+
 ## 4. 异步推理运行
 
 异步模式让机械臂执行当前 action chunk 时，在后台提前请求下一 action chunk。首个 chunk 仍然同步等待；第二个 chunk 开始才能隐藏推理延迟。
@@ -245,7 +247,7 @@ PY
 
 ## 6. 轨迹和夹爪可视化
 
-真机运行时加 `--record-episode`，会记录 UMI replay buffer：
+真机运行默认会记录 UMI replay buffer：
 
 ```text
 data/umi_real_inference/runs/<run_id>/replay_buffer.zarr
@@ -260,7 +262,14 @@ data/umi_real_inference/runs/<run_id>/videos/<episode_id>/<camera_idx>.timestamp
 
 `.timestamps.jsonl` 每行对应一帧，包含 `frame_idx`、`timestamp`、`camera_capture_timestamp` 和 `camera_receive_timestamp`，方便后处理时和机器人轨迹/动作 chunk 对齐。
 
-如果没有加 `--record-episode`，仍会保存 telemetry 和 `run_metadata.json`，但不会保存 replay buffer 轨迹和相机视频。
+如果加 `--no-record-episode`，仍会保存 telemetry 和 `run_metadata.json`，但不会保存 replay buffer 轨迹和相机视频。
+
+记录停止时机：
+
+- 按 OpenCV 窗口里的 `Esc` 后，主循环退出，环境 context manager 会调用 `env.stop()`，随后 `end_episode()` 停止相机录像并写入 zarr。
+- 达到 `--max-duration` 后同样会走 `end_episode()`。
+- 正常 `Ctrl+C` 通常也会触发 context manager 清理；直接 kill 进程或断电则可能留下未 finalize 的视频/zarr。
+- `--no-execute` 或 `--observe-only` 下没有实际 action 时间轴，因此会保存视频、metadata、telemetry；replay buffer 轨迹 episode 可能不会写入，因为当前 zarr 以已排程/执行 action 时间戳为主时间轴。
 
 运行结束后用对应 run 目录绘图：
 

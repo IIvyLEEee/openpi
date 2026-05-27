@@ -11,6 +11,10 @@ if str(_OPENPI_CLIENT_SRC) not in sys.path:
 from deploy import inference_real
 
 
+def test_record_episode_is_enabled_by_default():
+    assert inference_real.Args().record_episode is True
+
+
 def test_future_action_schedule_can_start_at_async_chunk_boundary(monkeypatch):
     monkeypatch.setattr(inference_real.time, "time", lambda: 100.0)
     actions = np.arange(21, dtype=np.float32).reshape(3, 7)

@@ -40,7 +40,7 @@ class Args:
     observe_only: bool = False
     no_execute: bool = False
     show_camera: bool = True
-    record_episode: bool = False
+    record_episode: bool = True
     telemetry_path: pathlib.Path | None = None
     async_inference: bool = False
     inference_overlap_steps: int = 0

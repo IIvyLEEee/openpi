@@ -121,7 +121,9 @@ uv run --group umi deploy/inference_real.py \
   --prompt="Pick up the red block and put it in the green box." 2>&1 | tee "$LOG"
 ```
 
-`--record-episode` enables the UMI replay buffer under:
+Episode recording is enabled by default. Use `--no-record-episode` if you only want telemetry and metadata.
+
+The UMI replay buffer is written under:
 
 ```text
 data/umi_real_inference/runs/<run_id>/replay_buffer.zarr

@@ -14,6 +14,7 @@ from deploy.umi.common.timestamp_accumulator import TimestampActionAccumulator
 from deploy.umi.common.usb_util import get_sorted_v4l_paths
 from deploy.umi.common.usb_util import reset_all_elgato_devices
 from deploy.umi.real_world.camera.multi_uvc_camera import MultiUvcCamera
+from deploy.umi.real_world.episode_recording import recorded_action_step_count
 from deploy.umi.real_world.robot_init import resolve_robot_init_joints
 from deploy.umi.real_world.rtde_interpolation_controller import RTDEInterpolationController
 from deploy.umi.real_world.wsg_controller import WSGController
@@ -496,13 +497,11 @@ class BimanualUmiEnv:
             end_time = float("inf")
             for key, value in self.obs_accumulator.timestamps.items():
                 end_time = min(end_time, value[-1])
-            end_time = min(end_time, self.action_accumulator.timestamps[-1])
-
             actions = self.action_accumulator.actions
             action_timestamps = self.action_accumulator.timestamps
-            n_steps = 0
-            if np.sum(self.action_accumulator.timestamps <= end_time) > 0:
-                n_steps = np.nonzero(self.action_accumulator.timestamps <= end_time)[0][-1] + 1
+            if len(action_timestamps) > 0:
+                end_time = min(end_time, action_timestamps[-1])
+            n_steps = recorded_action_step_count(action_timestamps, end_time=end_time)
 
             if n_steps > 0:
                 timestamps = action_timestamps[:n_steps]

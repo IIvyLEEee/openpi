@@ -61,3 +61,4 @@
 - Action: Added real UVC/fisheye mp4 recording for `--record-episode`, per-frame timestamp sidecars, timestamped run output directories, `run_metadata.json`, and `run_id` in telemetry rows.
 - Output layout: `data/umi_real_inference/runs/<run_id>/run_metadata.json`, `telemetry/inference.jsonl`, `replay_buffer.zarr`, and `videos/<episode_id>/<camera_idx>.mp4`.
 - Denoise settings: `scripts/serve_policy.py` now exposes `serve_policy.num_steps` and `serve_policy.log_denoise_steps` through server metadata so the real robot client records them in `run_metadata.json`.
+- Follow-up: Episode recording is now enabled by default; use `--no-record-episode` to disable replay buffer and camera video. No-action runs skip zarr episode finalization instead of failing on an empty action timeline.
