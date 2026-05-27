@@ -8,6 +8,8 @@ DEFAULT_BIMANUAL_UR5E_JOINTS = np.array(
     ],
     dtype=np.float64,
 )
+DEFAULT_LAUNCH_TIMEOUT = 3
+DEFAULT_INIT_JOINTS_LAUNCH_TIMEOUT = 30
 
 
 def _validate_joint_vector(joints):
@@ -42,3 +44,11 @@ def resolve_robot_init_joints(init_joints, robot_count):
         raise ValueError(f"Expected init_joints length to match robot_count {robot_count}, got {len(init_joints)}")
 
     return [_validate_joint_vector(joints) for joints in init_joints]
+
+
+def resolve_robot_launch_timeout(robot_config, joints_init):
+    if "launch_timeout" in robot_config:
+        return float(robot_config["launch_timeout"])
+    if joints_init is not None:
+        return DEFAULT_INIT_JOINTS_LAUNCH_TIMEOUT
+    return DEFAULT_LAUNCH_TIMEOUT

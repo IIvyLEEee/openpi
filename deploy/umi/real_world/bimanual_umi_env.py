@@ -15,6 +15,8 @@ from deploy.umi.common.usb_util import get_sorted_v4l_paths
 from deploy.umi.common.usb_util import reset_all_elgato_devices
 from deploy.umi.real_world.camera.multi_uvc_camera import MultiUvcCamera
 from deploy.umi.real_world.episode_recording import recorded_action_step_count
+from deploy.umi.real_world.episode_recording import should_finalize_episode
+from deploy.umi.real_world.robot_init import resolve_robot_launch_timeout
 from deploy.umi.real_world.robot_init import resolve_robot_init_joints
 from deploy.umi.real_world.rtde_interpolation_controller import RTDEInterpolationController
 from deploy.umi.real_world.wsg_controller import WSGController
@@ -152,7 +154,7 @@ class BimanualUmiEnv:
                 gain=300,
                 max_pos_speed=max_pos_speed * cube_diag,
                 max_rot_speed=max_rot_speed * cube_diag,
-                launch_timeout=3,
+                launch_timeout=resolve_robot_launch_timeout(rc, j_inits[robot_id]),
                 tcp_offset_pose=[0, 0, rc["tcp_offset"], 0, 0, 0],
                 payload_mass=None,
                 payload_cog=None,
@@ -482,6 +484,11 @@ class BimanualUmiEnv:
 
     def end_episode(self):
         "Stop recording"
+        if not should_finalize_episode(
+            obs_accumulator=self.obs_accumulator,
+            action_accumulator=self.action_accumulator,
+        ):
+            return
         assert self.is_ready
 
         # stop video recorder

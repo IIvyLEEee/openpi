@@ -68,6 +68,12 @@ uv run --group umi deploy/inference_real.py \
 
 注意：`--init-joints` 在 `--observe-only` 和 `--no-execute` 下也会生效，因为它发生在环境启动阶段。
 
+复位时 `moveJ` 可能超过普通启动等待时间。代码在启用 `--init-joints` 时默认把 UR5e 控制器 ready timeout 放宽到 30 秒；如果你的复位动作更慢，可以在 `deploy/configs/umi_ur5e_wsg50.yaml` 的对应 robot 配置里加：
+
+```yaml
+launch_timeout: 60
+```
+
 ## 2. 观察硬件但不推理
 
 ```bash

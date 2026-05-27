@@ -9,3 +9,7 @@ def recorded_action_step_count(action_timestamps: np.ndarray, *, end_time: float
     if valid.size == 0:
         return 0
     return int(valid[-1] + 1)
+
+
+def should_finalize_episode(*, obs_accumulator, action_accumulator) -> bool:
+    return obs_accumulator is not None or action_accumulator is not None

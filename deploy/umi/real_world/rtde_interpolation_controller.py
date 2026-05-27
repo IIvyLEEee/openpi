@@ -30,6 +30,14 @@ class Command(enum.Enum):
     SCHEDULE_WAYPOINT = 2
 
 
+def _wait_for_ready_event(*, ready_event, is_alive, timeout, controller_name):
+    if ready_event.wait(timeout):
+        return
+    if is_alive():
+        raise TimeoutError(f"{controller_name} is alive but not ready after {timeout}s.")
+    raise RuntimeError(f"{controller_name} exited before becoming ready.")
+
+
 def _apply_servol_command(
     *,
     command,
@@ -207,8 +215,12 @@ class RTDEInterpolationController(mp.Process):
             self.stop_wait()
 
     def start_wait(self):
-        self.ready_event.wait(self.launch_timeout)
-        assert self.is_alive()
+        _wait_for_ready_event(
+            ready_event=self.ready_event,
+            is_alive=self.is_alive,
+            timeout=self.launch_timeout,
+            controller_name=self.name,
+        )
 
     def stop_wait(self):
         self.join()

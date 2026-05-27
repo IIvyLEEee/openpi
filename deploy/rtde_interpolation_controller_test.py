@@ -3,6 +3,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
 
 class _DummyRTDEControlInterface:
@@ -96,3 +97,23 @@ def test_servol_command_converts_unified_pose_before_driving_waypoint():
     assert call["curr_time"] == 12.002
     assert call["max_pos_speed"] == 0.4
     assert call["max_rot_speed"] == 0.5
+
+
+class _NotReadyEvent:
+    def wait(self, timeout):
+        self.timeout = timeout
+        return False
+
+
+def test_wait_for_ready_event_reports_alive_timeout():
+    ready_event = _NotReadyEvent()
+
+    with pytest.raises(TimeoutError, match="not ready"):
+        rtde_interpolation_controller._wait_for_ready_event(
+            ready_event=ready_event,
+            is_alive=lambda: True,
+            timeout=30,
+            controller_name="robot0",
+        )
+
+    assert ready_event.timeout == 30
