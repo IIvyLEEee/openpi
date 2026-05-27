@@ -23,8 +23,10 @@ def test_build_inference_record_counts_model_scheduled_and_executed_actions():
         state=state,
         no_execute=False,
         steps_per_inference=6,
+        run_id="20260528_120000",
     )
 
+    assert record["run_id"] == "20260528_120000"
     assert record["iteration"] == 4
     assert record["loop_step"] == 12
     assert record["inference_latency_ms"] == 123.456

@@ -55,3 +55,9 @@
 - What changed from initial plan: Added code rather than only a research note, because the deployment entrypoint lacked structured metrics and did not expose replay buffer recording.
 - Open risks or unknowns: `inference_latency_ms` is client-observed policy call latency, including websocket/serialization/server work; pure model GPU compute time would need server-side instrumentation in `scripts/serve_policy.py` or the policy object. `--record-episode` is intended for actual execution; no-execute/observe-only runs do not produce meaningful executed-action trajectories.
 - Recommended next actions: Run a short `--no-execute` telemetry collection to validate policy latency and chunk sizes, then run a guarded real execution with `--record-episode` and plot the resulting `replay_buffer.zarr`.
+
+## 2026-05-28 Video And Run Metadata Extension
+
+- Action: Added real UVC/fisheye mp4 recording for `--record-episode`, per-frame timestamp sidecars, timestamped run output directories, `run_metadata.json`, and `run_id` in telemetry rows.
+- Output layout: `data/umi_real_inference/runs/<run_id>/run_metadata.json`, `telemetry/inference.jsonl`, `replay_buffer.zarr`, and `videos/<episode_id>/<camera_idx>.mp4`.
+- Denoise settings: `scripts/serve_policy.py` now exposes `serve_policy.num_steps` and `serve_policy.log_denoise_steps` through server metadata so the real robot client records them in `run_metadata.json`.

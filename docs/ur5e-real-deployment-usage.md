@@ -164,13 +164,29 @@ overlap_window_seconds = inference_overlap_steps / frequency
 
 ## 5. 遥测文件和指标
 
+默认每次运行会生成一个带本地时间戳的 run id，并把该次运行的输出放在：
+
+```text
+data/umi_real_inference/runs/<YYYYMMDD_HHMMSS>/
+```
+
+可以用 `--run-id=<name>` 手动指定 run id；如果要恢复旧行为、不创建时间戳子目录，可以加 `--no-timestamp-outputs`。
+
 默认遥测路径：
 
 ```text
-data/umi_real_inference/telemetry/inference.jsonl
+data/umi_real_inference/runs/<run_id>/telemetry/inference.jsonl
 ```
 
-可用 `--telemetry-path=<path>` 改路径。每一行是一条 JSON，对应一次模型 action chunk。
+可用 `--telemetry-path=<path>` 改路径。每一行是一条 JSON，对应一次模型 action chunk，并包含同一个 `run_id`。
+
+每次运行还会写：
+
+```text
+data/umi_real_inference/runs/<run_id>/run_metadata.json
+```
+
+其中包含 prompt、frequency、`steps_per_inference`、async 设置、是否 `--record-episode`、机器人配置、policy server metadata。policy server 如果用当前分支的 `scripts/serve_policy.py` 启动，metadata 里会包含 `serve_policy.num_steps` 和 `serve_policy.log_denoise_steps`，用于记录当前去噪步数设置。
 
 基础字段：
 
@@ -209,7 +225,7 @@ python - <<'PY'
 import json
 import statistics
 
-path = "data/umi_real_inference/telemetry/inference.jsonl"
+path = "data/umi_real_inference/runs/<run_id>/telemetry/inference.jsonl"
 records = [json.loads(line) for line in open(path)]
 
 lat = [r["inference_latency_ms"] for r in records]
@@ -232,16 +248,38 @@ PY
 真机运行时加 `--record-episode`，会记录 UMI replay buffer：
 
 ```text
-data/umi_real_inference/replay_buffer.zarr
+data/umi_real_inference/runs/<run_id>/replay_buffer.zarr
 ```
 
-绘制最近一个 episode 的末端轨迹，并用颜色表示夹爪开合宽度：
+同时保存每个相机的原始 UVC/鱼眼视频：
+
+```text
+data/umi_real_inference/runs/<run_id>/videos/<episode_id>/<camera_idx>.mp4
+data/umi_real_inference/runs/<run_id>/videos/<episode_id>/<camera_idx>.timestamps.jsonl
+```
+
+`.timestamps.jsonl` 每行对应一帧，包含 `frame_idx`、`timestamp`、`camera_capture_timestamp` 和 `camera_receive_timestamp`，方便后处理时和机器人轨迹/动作 chunk 对齐。
+
+如果没有加 `--record-episode`，仍会保存 telemetry 和 `run_metadata.json`，但不会保存 replay buffer 轨迹和相机视频。
+
+运行结束后用对应 run 目录绘图：
 
 ```bash
+RUN=data/umi_real_inference/runs/<run_id>
 uv run --group umi --group dev deploy/plot_umi_trajectory.py \
-  --replay-buffer=data/umi_real_inference/replay_buffer.zarr \
+  --replay-buffer=$RUN/replay_buffer.zarr \
   --episode-idx=-1 \
-  --output=data/umi_real_inference/trajectory_episode_last.png
+  --output=$RUN/trajectory_episode_last.png
+```
+
+为了让实验输出更容易对照，建议同时保留：
+
+```text
+run_metadata.json
+telemetry/inference.jsonl
+replay_buffer.zarr
+videos/<episode_id>/*.mp4
+trajectory_episode_last.png
 ```
 
 图上半部分是 UR5e end-effector 3D 轨迹，颜色随 `robot0_gripper_width` 变化；下半部分是夹爪宽度随时间变化曲线。

@@ -90,11 +90,14 @@ class MultiUvcCamera:
     def get_vis(self, k=None, out=None):
         return self.get(k=k, out=out)
 
-    def start_recording(self, *args, **kwargs):
-        pass
+    def start_recording(self, *, video_path, start_time=None):
+        video_paths = _repeat_to_list(video_path, self.n_cameras)
+        for camera, path in zip(self.cameras, video_paths):
+            camera.start_recording(video_path=path, start_time=start_time)
 
     def stop_recording(self):
-        pass
+        for camera in self.cameras:
+            camera.stop_recording()
 
     def restart_put(self, start_time):
         for camera in self.cameras:

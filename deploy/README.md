@@ -83,7 +83,7 @@ uv run --group umi deploy/inference_real.py \
 Inference telemetry is written as JSONL by default:
 
 ```text
-data/umi_real_inference/telemetry/inference.jsonl
+data/umi_real_inference/runs/<run_id>/telemetry/inference.jsonl
 ```
 
 Each line is one policy call and includes:
@@ -95,8 +95,17 @@ Each line is one policy call and includes:
 - `dropped_action_count`: `model_action_count - scheduled_action_count`.
 - `first_action`, `last_action`, `state`, and `scheduled_timestamps` for quick debugging.
 - Async runs additionally include `async_policy_call_ms`, `async_chunk_boundary_wait_ms`, `async_hidden_inference_ms`, `async_overlap_steps`, and `async_future_state_applied`.
+- `run_id`: the timestamped run identifier shared with videos, replay buffer, and metadata.
 
 Use `--telemetry-path=<path>` to write the JSONL file somewhere else.
+
+Each run also writes:
+
+```text
+data/umi_real_inference/runs/<run_id>/run_metadata.json
+```
+
+This records runtime arguments, robot config, policy server metadata, and denoising settings such as `serve_policy.num_steps` when the policy server is launched from this branch. Use `--run-id=<name>` to choose the run id, or `--no-timestamp-outputs` to keep writing directly under `--output-dir`.
 
 Run real execution:
 
@@ -115,16 +124,24 @@ uv run --group umi deploy/inference_real.py \
 `--record-episode` enables the UMI replay buffer under:
 
 ```text
-data/umi_real_inference/replay_buffer.zarr
+data/umi_real_inference/runs/<run_id>/replay_buffer.zarr
 ```
 
-That replay buffer stores the executed action timeline, end-effector position, joint state, and WSG50 gripper width. Plot the latest episode trajectory with color mapped to gripper width:
+It also saves raw UVC/fisheye camera video and per-frame timestamp sidecars:
+
+```text
+data/umi_real_inference/runs/<run_id>/videos/<episode_id>/<camera_idx>.mp4
+data/umi_real_inference/runs/<run_id>/videos/<episode_id>/<camera_idx>.timestamps.jsonl
+```
+
+The replay buffer stores the executed action timeline, end-effector position, joint state, and WSG50 gripper width. Plot the latest episode trajectory with color mapped to gripper width:
 
 ```bash
+RUN=data/umi_real_inference/runs/<run_id>
 uv run --group umi --group dev deploy/plot_umi_trajectory.py \
-  --replay-buffer=data/umi_real_inference/replay_buffer.zarr \
+  --replay-buffer=$RUN/replay_buffer.zarr \
   --episode-idx=-1 \
-  --output=data/umi_real_inference/trajectory_episode_last.png
+  --output=$RUN/trajectory_episode_last.png
 ```
 
 The upper plot is the 3D UR5e end-effector trajectory; darker/lighter colors follow the selected matplotlib colormap and represent gripper width in meters. The lower plot shows gripper width over time.
@@ -136,7 +153,7 @@ python - <<'PY'
 import json
 import statistics
 
-path = "data/umi_real_inference/telemetry/inference.jsonl"
+path = "data/umi_real_inference/runs/<run_id>/telemetry/inference.jsonl"
 records = [json.loads(line) for line in open(path)]
 latencies = [r["inference_latency_ms"] for r in records]
 print("num_inferences", len(records))

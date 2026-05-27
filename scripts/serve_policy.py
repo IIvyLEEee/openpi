@@ -10,6 +10,7 @@ import tyro
 from openpi.models import lora_merge as _lora_merge
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.serving import server_metadata as _server_metadata
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -128,7 +129,23 @@ def create_policy(args: Args) -> _policy.Policy:
 
 def main(args: Args) -> None:
     policy = create_policy(args)
-    policy_metadata = policy.metadata
+    match args.policy:
+        case Checkpoint():
+            policy_config = args.policy.config
+            policy_dir = args.policy.dir
+        case Default():
+            checkpoint = DEFAULT_CHECKPOINT.get(args.env)
+            policy_config = checkpoint.config if checkpoint is not None else None
+            policy_dir = checkpoint.dir if checkpoint is not None else None
+    policy_metadata = _server_metadata.build_policy_server_metadata(
+        base_metadata=policy.metadata,
+        policy_config=policy_config,
+        policy_dir=policy_dir,
+        default_prompt=args.default_prompt,
+        num_steps=args.num_steps,
+        log_denoise_steps=args.log_denoise_steps,
+        lora_merge=args.lora_merge.value,
+    )
 
     # Record the policy's behavior.
     if args.record:

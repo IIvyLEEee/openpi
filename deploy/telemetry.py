@@ -33,6 +33,7 @@ def build_inference_record(
     no_execute: bool,
     steps_per_inference: int | None,
     async_metrics: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     actions = np.asarray(actions, dtype=np.float32)
     scheduled_actions = np.asarray(scheduled_actions, dtype=np.float32)
@@ -48,6 +49,7 @@ def build_inference_record(
     last_action = actions[-1] if model_action_count > 0 else None
 
     record = {
+        "run_id": run_id,
         "iteration": int(iteration),
         "loop_step": int(loop_step),
         "wall_time": float(wall_time),

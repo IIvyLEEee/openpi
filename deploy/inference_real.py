@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 import numpy as np
 
 from deploy import async_inference as _async_inference
+from deploy import run_metadata as _run_metadata
 from deploy import telemetry as _telemetry
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ class Args:
     inference_overlap_steps: int = 0
     async_future_state: bool = True
     init_joints: bool = False
+    run_id: str | None = None
+    timestamp_outputs: bool = True
 
 
 @dataclasses.dataclass
@@ -224,21 +227,29 @@ def _connect_policy(args: Args):
     return policy
 
 
-def _resolve_telemetry_path(args: Args) -> pathlib.Path:
-    if args.telemetry_path is not None:
-        return args.telemetry_path
-    return args.output_dir / "telemetry" / "inference.jsonl"
-
-
 def _run_dry(args: Args) -> None:
+    run_id = _run_metadata.resolve_run_id(args)
+    run_paths = _run_metadata.resolve_run_paths(args, run_id=run_id)
     policy = _connect_policy(args)
+    server_metadata = policy.get_server_metadata()
+    _run_metadata.write_run_metadata(
+        run_paths.metadata_path,
+        _run_metadata.build_run_metadata(
+            run_id=run_id,
+            args=args,
+            run_paths=run_paths,
+            robot_config_path=None,
+            robot_config=None,
+            server_metadata=server_metadata,
+        ),
+    )
     policy_obs = _fake_policy_observation(args.prompt)
     infer_start = time.perf_counter()
     wall_time = time.time()
     result = policy.infer(policy_obs)
     infer_ms = 1000 * (time.perf_counter() - infer_start)
     actions = _normalize_action_chunk(result)
-    telemetry_path = _resolve_telemetry_path(args)
+    telemetry_path = run_paths.telemetry_path
     with _telemetry.InferenceTelemetryRecorder(telemetry_path) as telemetry_recorder:
         telemetry_recorder.write(
             _telemetry.build_inference_record(
@@ -253,6 +264,7 @@ def _run_dry(args: Args) -> None:
                 state=policy_obs["observation/state"],
                 no_execute=True,
                 steps_per_inference=args.steps_per_inference,
+                run_id=run_id,
             )
         )
     logger.info(
@@ -265,24 +277,38 @@ def _run_real(args: Args) -> None:
     from deploy.umi.real_world.bimanual_umi_env import BimanualUmiEnv
 
     _validate_runtime_args(args)
+    run_id = _run_metadata.resolve_run_id(args)
+    run_paths = _run_metadata.resolve_run_paths(args, run_id=run_id)
     robot_config = _load_robot_config(args.robot_config)
     cameras_config = robot_config["cameras"]
     robots_config = robot_config["robots"]
     grippers_config = robot_config["grippers"]
-    args.output_dir.expanduser().parent.mkdir(parents=True, exist_ok=True)
+    run_paths.output_dir.parent.mkdir(parents=True, exist_ok=True)
 
     policy = None if args.observe_only else _connect_policy(args)
+    server_metadata = policy.get_server_metadata() if policy is not None else {}
+    _run_metadata.write_run_metadata(
+        run_paths.metadata_path,
+        _run_metadata.build_run_metadata(
+            run_id=run_id,
+            args=args,
+            run_paths=run_paths,
+            robot_config_path=args.robot_config,
+            robot_config=robot_config,
+            server_metadata=server_metadata,
+        ),
+    )
     show_camera = args.show_camera
     if show_camera and not os.environ.get("DISPLAY"):
         logger.warning("DISPLAY is not set; disabling camera window.")
         show_camera = False
 
     dt = 1.0 / args.frequency
-    telemetry_path = _resolve_telemetry_path(args)
+    telemetry_path = run_paths.telemetry_path
     with SharedMemoryManager() as shm_manager:
         with _telemetry.InferenceTelemetryRecorder(telemetry_path) as telemetry_recorder:
             with BimanualUmiEnv(
-                output_dir=args.output_dir,
+                output_dir=run_paths.output_dir,
                 cameras_config=cameras_config,
                 robots_config=robots_config,
                 grippers_config=grippers_config,
@@ -301,7 +327,9 @@ def _run_real(args: Args) -> None:
                 eval_start_time = time.time()
                 if args.record_episode:
                     env.start_episode(start_time=eval_start_time)
-                    logger.info("Recording replay buffer under %s", args.output_dir / "replay_buffer.zarr")
+                    logger.info("Recording replay buffer under %s", run_paths.replay_buffer_path)
+                    logger.info("Recording camera videos under %s", run_paths.videos_dir)
+                logger.info("Writing run metadata to %s", run_paths.metadata_path)
                 logger.info("Writing inference telemetry to %s", telemetry_path)
                 loop_start = time.monotonic()
                 iter_idx = 0
@@ -414,6 +442,7 @@ def _run_real(args: Args) -> None:
                                 no_execute=args.no_execute,
                                 steps_per_inference=args.steps_per_inference,
                                 async_metrics=async_metrics,
+                                run_id=run_id,
                             )
                         )
                         inference_idx += 1

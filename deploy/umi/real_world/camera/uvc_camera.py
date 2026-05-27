@@ -1,5 +1,8 @@
 import enum
+import json
 import multiprocessing as mp
+import pathlib
+import queue
 import time
 from typing import Callable, Dict, Optional
 
@@ -14,6 +17,41 @@ from deploy.umi.shared_memory.shared_memory_ring_buffer import SharedMemoryRingB
 
 class Command(enum.Enum):
     RESTART_PUT = 0
+    START_RECORDING = 1
+    STOP_RECORDING = 2
+
+
+class FrameVideoRecorder:
+    def __init__(self, *, video_path: pathlib.Path | str, fps: float):
+        self.video_path = pathlib.Path(video_path)
+        self.video_path.parent.mkdir(parents=True, exist_ok=True)
+        sidecar_name = f"{self.video_path.stem}.timestamps.jsonl"
+        self.timestamp_path = self.video_path.with_name(sidecar_name)
+        self.fps = fps
+        self._writer = None
+        self._timestamp_file = self.timestamp_path.open("w", encoding="utf-8")
+
+    def _ensure_writer(self, frame: np.ndarray):
+        if self._writer is not None:
+            return
+        height, width = frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(self.video_path), fourcc, float(self.fps), (width, height))
+        if not writer.isOpened():
+            self._timestamp_file.close()
+            raise RuntimeError(f"Failed to open video writer for {self.video_path}")
+        self._writer = writer
+
+    def write_frame(self, frame: np.ndarray, *, frame_metadata: dict):
+        self._ensure_writer(frame)
+        self._writer.write(frame)
+        self._timestamp_file.write(json.dumps(frame_metadata, sort_keys=True) + "\n")
+
+    def close(self):
+        if self._writer is not None:
+            self._writer.release()
+            self._writer = None
+        self._timestamp_file.close()
 
 
 class UvcCamera(mp.Process):
@@ -67,6 +105,9 @@ class UvcCamera(mp.Process):
         self.num_threads = num_threads
         self.verbose = verbose
         self.put_start_time = None
+        self.command_queue = mp.Queue()
+        self.recording_done_event = mp.Event()
+        self.recording_done_event.set()
 
         self.stop_event = mp.Event()
         self.ready_event = mp.Event()
@@ -97,13 +138,49 @@ class UvcCamera(mp.Process):
         return self.ring_buffer.get_last_k(k, out=out)
 
     def restart_put(self, start_time):
-        self.put_start_time = start_time
+        self.command_queue.put({"cmd": Command.RESTART_PUT.value, "start_time": start_time})
 
-    def start_recording(self, *args, **kwargs):
-        pass
+    def start_recording(self, *, video_path, start_time=None):
+        if start_time is None:
+            start_time = time.time()
+        self.recording_done_event.clear()
+        self.command_queue.put(
+            {
+                "cmd": Command.START_RECORDING.value,
+                "video_path": str(video_path),
+                "start_time": float(start_time),
+            }
+        )
 
-    def stop_recording(self):
-        pass
+    def stop_recording(self, wait=True):
+        self.command_queue.put({"cmd": Command.STOP_RECORDING.value})
+        if wait:
+            self.recording_done_event.wait(timeout=5.0)
+
+    def _process_commands(self, *, active_recorder, pending_recording):
+        while True:
+            try:
+                command = self.command_queue.get_nowait()
+            except queue.Empty:
+                break
+            cmd = command["cmd"]
+            if cmd == Command.RESTART_PUT.value:
+                self.put_start_time = float(command["start_time"])
+            elif cmd == Command.START_RECORDING.value:
+                if active_recorder is not None:
+                    active_recorder.close()
+                pending_recording = {
+                    "video_path": command["video_path"],
+                    "start_time": float(command["start_time"]),
+                }
+                active_recorder = None
+            elif cmd == Command.STOP_RECORDING.value:
+                if active_recorder is not None:
+                    active_recorder.close()
+                    active_recorder = None
+                pending_recording = None
+                self.recording_done_event.set()
+        return active_recorder, pending_recording
 
     def run(self):
         threadpool_limits(self.num_threads)
@@ -124,8 +201,19 @@ class UvcCamera(mp.Process):
             put_start_time = self.put_start_time or time.time()
             iter_idx = 0
             t_start = time.time()
+            active_recorder = None
+            pending_recording = None
 
             while not self.stop_event.is_set():
+                active_recorder, pending_recording = self._process_commands(
+                    active_recorder=active_recorder,
+                    pending_recording=pending_recording,
+                )
+                if self.put_start_time is not None:
+                    put_start_time = self.put_start_time
+                    self.put_start_time = None
+                    put_idx = None
+
                 ret = cap.grab()
                 if not ret:
                     raise RuntimeError(f"Failed to grab frame from {self.dev_video_path}")
@@ -145,6 +233,22 @@ class UvcCamera(mp.Process):
                     "timestamp": t_cal,
                     "color": frame,
                 }
+                if pending_recording is not None and t_cal >= pending_recording["start_time"]:
+                    active_recorder = FrameVideoRecorder(
+                        video_path=pending_recording["video_path"],
+                        fps=self.capture_fps,
+                    )
+                    pending_recording = None
+                if active_recorder is not None:
+                    active_recorder.write_frame(
+                        frame,
+                        frame_metadata={
+                            "frame_idx": iter_idx,
+                            "timestamp": t_cal,
+                            "camera_capture_timestamp": t_cap,
+                            "camera_receive_timestamp": t_recv,
+                        },
+                    )
                 put_data = self.transform(dict(data)) if self.transform is not None else data
 
                 if self.put_downsample:
@@ -176,4 +280,7 @@ class UvcCamera(mp.Process):
 
             traceback.print_exc()
         finally:
+            if "active_recorder" in locals() and active_recorder is not None:
+                active_recorder.close()
+            self.recording_done_event.set()
             cap.release()
