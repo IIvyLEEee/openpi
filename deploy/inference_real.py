@@ -48,6 +48,8 @@ class Args:
     async_inference: bool = False
     inference_overlap_steps: int = 0
     async_future_state: bool = True
+    strict_sync: bool = False
+    strict_sync_start_delay: float = 0.25
     init_joints: bool = False
     run_id: str | None = None
     timestamp_outputs: bool = True
@@ -165,17 +167,94 @@ def _future_action_schedule(
     action_exec_latency: float,
     start_timestamp: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
+    scheduled_actions, timestamps, _ = _future_action_schedule_with_indices(
+        actions=actions,
+        obs_timestamp=obs_timestamp,
+        eval_start_time=eval_start_time,
+        frequency=frequency,
+        action_exec_latency=action_exec_latency,
+        start_timestamp=start_timestamp,
+    )
+    return scheduled_actions, timestamps
+
+
+def _future_action_schedule_with_indices(
+    actions: np.ndarray,
+    obs_timestamp: float,
+    eval_start_time: float,
+    frequency: float,
+    action_exec_latency: float,
+    start_timestamp: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     dt = 1.0 / frequency
     schedule_start = obs_timestamp if start_timestamp is None else start_timestamp
     timestamps = np.arange(len(actions), dtype=np.float64) * dt + schedule_start
+    action_indices = np.arange(len(actions), dtype=np.int64)
 
     curr_time = time.time()
     is_new = timestamps > (curr_time + action_exec_latency)
     if np.any(is_new):
-        return actions[is_new], timestamps[is_new]
+        return actions[is_new], timestamps[is_new], action_indices[is_new]
 
     next_step_idx = int(np.ceil((curr_time - eval_start_time) / dt))
-    return actions[[-1]], np.array([eval_start_time + next_step_idx * dt], dtype=np.float64)
+    return (
+        actions[[-1]],
+        np.array([eval_start_time + next_step_idx * dt], dtype=np.float64),
+        np.array([len(actions) - 1], dtype=np.int64),
+    )
+
+
+def _scheduled_action_limit(action_count: int, args: Args) -> int:
+    max_scheduled_actions = args.max_scheduled_actions
+    if max_scheduled_actions is None:
+        max_scheduled_actions = args.steps_per_inference
+    if max_scheduled_actions is None:
+        return action_count
+    return min(action_count, max_scheduled_actions)
+
+
+def _strict_sync_action_schedule(
+    actions: np.ndarray,
+    inference_return_timestamp: float,
+    frequency: float,
+    start_delay: float,
+    args: Args,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    action_count = _scheduled_action_limit(len(actions), args)
+    scheduled_actions = actions[:action_count]
+    timestamps = inference_return_timestamp + start_delay + np.arange(action_count, dtype=np.float64) / frequency
+    action_indices = np.arange(action_count, dtype=np.int64)
+    return scheduled_actions, timestamps, action_indices
+
+
+def _schedule_actions_for_execution(
+    *,
+    actions: np.ndarray,
+    obs_timestamp: float,
+    eval_start_time: float,
+    inference_return_timestamp: float,
+    args: Args,
+    start_timestamp: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if args.strict_sync:
+        return _strict_sync_action_schedule(
+            actions=actions,
+            inference_return_timestamp=inference_return_timestamp,
+            frequency=args.frequency,
+            start_delay=args.strict_sync_start_delay,
+            args=args,
+        )
+
+    scheduled_actions, timestamps, action_indices = _future_action_schedule_with_indices(
+        actions=actions,
+        obs_timestamp=obs_timestamp,
+        eval_start_time=eval_start_time,
+        frequency=args.frequency,
+        action_exec_latency=args.action_exec_latency,
+        start_timestamp=start_timestamp,
+    )
+    action_count = _scheduled_action_limit(len(scheduled_actions), args)
+    return scheduled_actions[:action_count], timestamps[:action_count], action_indices[:action_count]
 
 
 def _truncate_scheduled_actions(
@@ -183,22 +262,40 @@ def _truncate_scheduled_actions(
     timestamps: np.ndarray,
     args: Args,
 ) -> tuple[np.ndarray, np.ndarray]:
-    max_scheduled_actions = args.max_scheduled_actions
-    if max_scheduled_actions is None:
-        max_scheduled_actions = args.steps_per_inference
-    if max_scheduled_actions is not None:
-        scheduled_actions = scheduled_actions[:max_scheduled_actions]
-        timestamps = timestamps[:max_scheduled_actions]
-    return scheduled_actions, timestamps
+    action_count = _scheduled_action_limit(len(scheduled_actions), args)
+    return scheduled_actions[:action_count], timestamps[:action_count]
+
+
+def _next_cycle_wait_monotonic(
+    *,
+    loop_start_monotonic: float,
+    eval_start_time: float,
+    iter_idx: int,
+    dt: float,
+    timestamps: np.ndarray,
+    strict_sync: bool,
+) -> float:
+    if strict_sync and len(timestamps) > 0:
+        chunk_end_timestamp = float(timestamps[-1] + dt)
+        return loop_start_monotonic + max(0.0, chunk_end_timestamp - eval_start_time)
+    return loop_start_monotonic + iter_idx * dt
 
 
 def _validate_runtime_args(args: Args) -> None:
     if args.frequency <= 0:
         raise ValueError("--frequency must be positive.")
+    if args.steps_per_inference is not None and args.steps_per_inference <= 0:
+        raise ValueError("--steps-per-inference must be positive when set.")
+    if args.max_scheduled_actions is not None and args.max_scheduled_actions <= 0:
+        raise ValueError("--max-scheduled-actions must be positive when set.")
     if not math.isfinite(args.inference_latency_scale) or args.inference_latency_scale < 1.0:
         raise ValueError("--inference-latency-scale must be >= 1.0.")
+    if args.strict_sync and args.async_inference:
+        raise ValueError("--strict-sync cannot be combined with --async-inference.")
     if args.async_inference and args.inference_overlap_steps <= 0:
         raise ValueError("--async-inference requires --inference-overlap-steps to be positive.")
+    if not math.isfinite(args.strict_sync_start_delay) or args.strict_sync_start_delay < 0:
+        raise ValueError("--strict-sync-start-delay must be finite and non-negative.")
 
 
 def _show_camera(obs: dict, policy_image: np.ndarray | None = None) -> bool:
@@ -363,6 +460,7 @@ def _run_real(args: Args) -> None:
                                 raise RuntimeError("Pending async request exists without an async worker.")
                             wait_start = time.perf_counter()
                             async_result = async_worker.result()
+                            inference_return_timestamp = time.time()
                             chunk_boundary_wait_ms = 1000 * (time.perf_counter() - wait_start)
                             result = async_result.response
                             wall_time = async_result.wall_time
@@ -417,6 +515,7 @@ def _run_real(args: Args) -> None:
                             infer_start = time.perf_counter()
                             wall_time = time.time()
                             result = policy_infer(policy_obs)
+                            inference_return_timestamp = time.time()
                             infer_ms = 1000 * (time.perf_counter() - infer_start)
                             obs_timestamp = float(obs["timestamp"][-1])
                             state = policy_obs["observation/state"]
@@ -426,19 +525,15 @@ def _run_real(args: Args) -> None:
                         actions = _normalize_action_chunk(result)
                         actions = _apply_safety_filters(actions, robot_config)
 
-                        scheduled_actions, timestamps = _future_action_schedule(
+                        scheduled_actions, timestamps, scheduled_action_indices = _schedule_actions_for_execution(
                             actions=actions,
                             obs_timestamp=obs_timestamp,
                             eval_start_time=eval_start_time,
-                            frequency=args.frequency,
-                            action_exec_latency=args.action_exec_latency,
+                            inference_return_timestamp=inference_return_timestamp,
+                            args=args,
                             start_timestamp=schedule_start_timestamp,
                         )
-                        scheduled_actions, timestamps = _truncate_scheduled_actions(
-                            scheduled_actions=scheduled_actions,
-                            timestamps=timestamps,
-                            args=args,
-                        )
+                        schedule_mode = "strict_sync" if args.strict_sync else "timestamp_filter"
 
                         telemetry_recorder.write(
                             _telemetry.build_inference_record(
@@ -450,21 +545,26 @@ def _run_real(args: Args) -> None:
                                 actions=actions,
                                 scheduled_actions=scheduled_actions,
                                 scheduled_timestamps=timestamps,
+                                scheduled_action_indices=scheduled_action_indices,
                                 state=state,
                                 no_execute=args.no_execute,
                                 steps_per_inference=args.steps_per_inference,
                                 async_metrics=async_metrics,
+                                schedule_mode=schedule_mode,
                                 run_id=run_id,
                             )
                         )
                         inference_idx += 1
 
                         logger.info(
-                            "inference %.1f ms, got %d actions, scheduled %d%s, first_delta=%s, last_delta=%s",
+                            "inference %.1f ms, got %d actions, scheduled %d%s, mode=%s, first_action_index=%s, "
+                            "first_delta=%s, last_delta=%s",
                             infer_ms,
                             len(actions),
                             len(scheduled_actions),
                             " (no-execute)" if args.no_execute else "",
+                            schedule_mode,
+                            int(scheduled_action_indices[0]) if len(scheduled_action_indices) > 0 else None,
                             np.array2string(actions[0, :6] - state[:6], precision=4),
                             np.array2string(actions[-1, :6] - state[:6], precision=4),
                         )
@@ -486,7 +586,14 @@ def _run_real(args: Args) -> None:
                         else:
                             step_advance = len(actions)
                         iter_idx += max(1, step_advance)
-                        t_cycle_end = loop_start + iter_idx * dt
+                        t_cycle_end = _next_cycle_wait_monotonic(
+                            loop_start_monotonic=loop_start,
+                            eval_start_time=eval_start_time,
+                            iter_idx=iter_idx,
+                            dt=dt,
+                            timestamps=timestamps,
+                            strict_sync=args.strict_sync,
+                        )
 
                         if async_worker is not None and len(scheduled_actions) > 0:
                             overlap_steps = min(args.inference_overlap_steps, len(scheduled_actions))

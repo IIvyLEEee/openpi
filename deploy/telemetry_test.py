@@ -102,6 +102,32 @@ def test_build_inference_record_includes_async_metrics_when_present():
     assert record["async_target_start_timestamp"] == 101.0
 
 
+def test_build_inference_record_includes_schedule_metadata_when_present():
+    actions = np.ones((4, 7), dtype=np.float32)
+
+    record = build_inference_record(
+        iteration=0,
+        loop_step=0,
+        wall_time=100.0,
+        obs_timestamp=99.0,
+        inference_latency_ms=10.0,
+        actions=actions,
+        scheduled_actions=actions[:2],
+        scheduled_timestamps=np.array([100.1, 100.2], dtype=np.float64),
+        scheduled_action_indices=np.array([0, 1], dtype=np.int64),
+        state=np.zeros(7, dtype=np.float32),
+        no_execute=False,
+        steps_per_inference=2,
+        schedule_mode="strict_sync",
+    )
+
+    assert record["schedule_mode"] == "strict_sync"
+    assert record["scheduled_action_indices"] == [0, 1]
+    assert record["first_scheduled_action_index"] == 0
+    assert record["last_scheduled_action_index"] == 1
+    assert record["prefix_dropped_action_count"] == 0
+
+
 def test_inference_telemetry_recorder_writes_jsonl_and_creates_parent_dir(tmp_path):
     telemetry_path = tmp_path / "nested" / "inference.jsonl"
     record = {

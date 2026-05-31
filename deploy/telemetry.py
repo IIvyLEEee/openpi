@@ -32,12 +32,16 @@ def build_inference_record(
     state: np.ndarray,
     no_execute: bool,
     steps_per_inference: int | None,
+    scheduled_action_indices: np.ndarray | None = None,
     async_metrics: dict[str, Any] | None = None,
+    schedule_mode: str | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
     actions = np.asarray(actions, dtype=np.float32)
     scheduled_actions = np.asarray(scheduled_actions, dtype=np.float32)
     scheduled_timestamps = np.asarray(scheduled_timestamps, dtype=np.float64)
+    if scheduled_action_indices is not None:
+        scheduled_action_indices = np.asarray(scheduled_action_indices, dtype=np.int64).reshape(-1)
     state = np.asarray(state, dtype=np.float32)
 
     model_action_count = int(actions.shape[0])
@@ -67,6 +71,19 @@ def build_inference_record(
         "last_action": _array_or_none(last_action),
         "scheduled_timestamps": scheduled_timestamps.reshape(-1).tolist(),
     }
+    if schedule_mode is not None:
+        record["schedule_mode"] = schedule_mode
+    if scheduled_action_indices is not None:
+        first_idx = int(scheduled_action_indices[0]) if scheduled_action_indices.size else None
+        last_idx = int(scheduled_action_indices[-1]) if scheduled_action_indices.size else None
+        record.update(
+            {
+                "scheduled_action_indices": scheduled_action_indices.tolist(),
+                "first_scheduled_action_index": first_idx,
+                "last_scheduled_action_index": last_idx,
+                "prefix_dropped_action_count": max(0, first_idx) if first_idx is not None else None,
+            }
+        )
     if async_metrics:
         record.update({key: _json_safe(value) for key, value in async_metrics.items()})
     return record
