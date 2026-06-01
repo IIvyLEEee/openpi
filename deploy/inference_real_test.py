@@ -93,6 +93,71 @@ def test_strict_sync_schedule_uses_max_scheduled_actions_when_set():
     np.testing.assert_array_equal(action_indices, np.array([0, 1]))
 
 
+def test_strict_async_schedule_uses_planned_boundary_when_inference_is_ready():
+    actions = np.arange(35, dtype=np.float32).reshape(5, 7)
+    args = inference_real.Args(
+        frequency=10.0,
+        steps_per_inference=3,
+        strict_async=True,
+        strict_async_overlap_steps=2,
+        strict_sync_start_delay=0.25,
+    )
+
+    scheduled_actions, timestamps, action_indices = inference_real._schedule_actions_for_execution(
+        actions=actions,
+        obs_timestamp=100.0,
+        eval_start_time=0.0,
+        inference_return_timestamp=200.0,
+        args=args,
+        start_timestamp=200.5,
+    )
+
+    np.testing.assert_array_equal(scheduled_actions, actions[:3])
+    np.testing.assert_allclose(timestamps, np.array([200.5, 200.6, 200.7], dtype=np.float64))
+    np.testing.assert_array_equal(action_indices, np.array([0, 1, 2]))
+
+
+def test_strict_async_schedule_slips_when_inference_misses_boundary():
+    actions = np.arange(35, dtype=np.float32).reshape(5, 7)
+    args = inference_real.Args(
+        frequency=10.0,
+        steps_per_inference=3,
+        strict_async=True,
+        strict_async_overlap_steps=2,
+        strict_sync_start_delay=0.25,
+    )
+
+    scheduled_actions, timestamps, action_indices = inference_real._schedule_actions_for_execution(
+        actions=actions,
+        obs_timestamp=100.0,
+        eval_start_time=0.0,
+        inference_return_timestamp=201.0,
+        args=args,
+        start_timestamp=200.5,
+    )
+
+    np.testing.assert_array_equal(scheduled_actions, actions[:3])
+    np.testing.assert_allclose(timestamps, np.array([201.25, 201.35, 201.45], dtype=np.float64))
+    np.testing.assert_array_equal(action_indices, np.array([0, 1, 2]))
+
+
+def test_strict_async_launch_timing_uses_fixed_overlap_steps():
+    timestamps = np.array([200.25, 200.35, 200.45], dtype=np.float64)
+
+    launch = inference_real._strict_async_launch_timing(
+        timestamps=timestamps,
+        dt=0.1,
+        overlap_steps=2,
+        loop_start_monotonic=10.0,
+        eval_start_time=100.0,
+    )
+
+    assert launch.target_start_timestamp == pytest.approx(200.55)
+    assert launch.launch_timestamp == pytest.approx(200.35)
+    assert launch.launch_monotonic == pytest.approx(110.35)
+    assert launch.overlap_window_ms == pytest.approx(200.0)
+
+
 def test_strict_sync_waits_until_rescheduled_chunk_finishes():
     timestamps = np.array([200.25, 200.35, 200.45], dtype=np.float64)
 
@@ -102,7 +167,7 @@ def test_strict_sync_waits_until_rescheduled_chunk_finishes():
         iter_idx=3,
         dt=0.1,
         timestamps=timestamps,
-        strict_sync=True,
+        strict_scheduled=True,
     )
 
     assert wait_target == pytest.approx(110.55)
@@ -116,3 +181,29 @@ def test_validate_runtime_args_rejects_strict_sync_with_async_inference():
 def test_validate_runtime_args_rejects_negative_strict_sync_start_delay():
     with pytest.raises(ValueError, match="strict-sync-start-delay"):
         inference_real._validate_runtime_args(inference_real.Args(strict_sync=True, strict_sync_start_delay=-0.1))
+
+
+def test_validate_runtime_args_rejects_strict_async_with_practical_async():
+    with pytest.raises(ValueError, match="strict-async"):
+        inference_real._validate_runtime_args(
+            inference_real.Args(strict_async=True, strict_async_overlap_steps=1, async_inference=True)
+        )
+
+
+def test_validate_runtime_args_rejects_strict_async_with_strict_sync():
+    with pytest.raises(ValueError, match="strict-async"):
+        inference_real._validate_runtime_args(
+            inference_real.Args(strict_async=True, strict_async_overlap_steps=1, strict_sync=True)
+        )
+
+
+def test_validate_runtime_args_rejects_nonpositive_strict_async_overlap():
+    with pytest.raises(ValueError, match="strict-async-overlap-steps"):
+        inference_real._validate_runtime_args(inference_real.Args(strict_async=True, strict_async_overlap_steps=0))
+
+
+def test_validate_runtime_args_rejects_strict_async_overlap_larger_than_fixed_chunk():
+    with pytest.raises(ValueError, match="strict-async-overlap-steps"):
+        inference_real._validate_runtime_args(
+            inference_real.Args(strict_async=True, strict_async_overlap_steps=7, steps_per_inference=6)
+        )

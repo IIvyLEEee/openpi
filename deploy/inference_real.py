@@ -50,15 +50,26 @@ class Args:
     async_future_state: bool = True
     strict_sync: bool = False
     strict_sync_start_delay: float = 0.25
+    strict_async: bool = False
+    strict_async_overlap_steps: int = 0
     init_joints: bool = False
     run_id: str | None = None
     timestamp_outputs: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class _StrictAsyncLaunchTiming:
+    target_start_timestamp: float
+    launch_timestamp: float
+    launch_monotonic: float
+    overlap_window_ms: float
 
 
 @dataclasses.dataclass
 class _PendingAsyncRequest:
     request: _async_inference.AsyncInferenceRequest
     target_start_timestamp: float
+    launch_timestamp: float | None
     overlap_steps: int
     overlap_window_ms: float
     future_state_applied: bool
@@ -219,10 +230,13 @@ def _strict_sync_action_schedule(
     frequency: float,
     start_delay: float,
     args: Args,
+    start_timestamp: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     action_count = _scheduled_action_limit(len(actions), args)
     scheduled_actions = actions[:action_count]
-    timestamps = inference_return_timestamp + start_delay + np.arange(action_count, dtype=np.float64) / frequency
+    earliest_start = inference_return_timestamp + start_delay
+    schedule_start = earliest_start if start_timestamp is None else max(float(start_timestamp), earliest_start)
+    timestamps = schedule_start + np.arange(action_count, dtype=np.float64) / frequency
     action_indices = np.arange(action_count, dtype=np.int64)
     return scheduled_actions, timestamps, action_indices
 
@@ -236,13 +250,14 @@ def _schedule_actions_for_execution(
     args: Args,
     start_timestamp: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if args.strict_sync:
+    if args.strict_sync or args.strict_async:
         return _strict_sync_action_schedule(
             actions=actions,
             inference_return_timestamp=inference_return_timestamp,
             frequency=args.frequency,
             start_delay=args.strict_sync_start_delay,
             args=args,
+            start_timestamp=start_timestamp if args.strict_async else None,
         )
 
     scheduled_actions, timestamps, action_indices = _future_action_schedule_with_indices(
@@ -273,12 +288,30 @@ def _next_cycle_wait_monotonic(
     iter_idx: int,
     dt: float,
     timestamps: np.ndarray,
-    strict_sync: bool,
+    strict_scheduled: bool,
 ) -> float:
-    if strict_sync and len(timestamps) > 0:
+    if strict_scheduled and len(timestamps) > 0:
         chunk_end_timestamp = float(timestamps[-1] + dt)
         return loop_start_monotonic + max(0.0, chunk_end_timestamp - eval_start_time)
     return loop_start_monotonic + iter_idx * dt
+
+
+def _strict_async_launch_timing(
+    *,
+    timestamps: np.ndarray,
+    dt: float,
+    overlap_steps: int,
+    loop_start_monotonic: float,
+    eval_start_time: float,
+) -> _StrictAsyncLaunchTiming:
+    target_start_timestamp = float(timestamps[-1] + dt)
+    launch_timestamp = target_start_timestamp - overlap_steps * dt
+    return _StrictAsyncLaunchTiming(
+        target_start_timestamp=target_start_timestamp,
+        launch_timestamp=launch_timestamp,
+        launch_monotonic=loop_start_monotonic + max(0.0, launch_timestamp - eval_start_time),
+        overlap_window_ms=1000 * overlap_steps * dt,
+    )
 
 
 def _validate_runtime_args(args: Args) -> None:
@@ -292,10 +325,24 @@ def _validate_runtime_args(args: Args) -> None:
         raise ValueError("--inference-latency-scale must be >= 1.0.")
     if args.strict_sync and args.async_inference:
         raise ValueError("--strict-sync cannot be combined with --async-inference.")
+    if args.strict_async and args.async_inference:
+        raise ValueError("--strict-async cannot be combined with --async-inference.")
+    if args.strict_async and args.strict_sync:
+        raise ValueError("--strict-async cannot be combined with --strict-sync.")
     if args.async_inference and args.inference_overlap_steps <= 0:
         raise ValueError("--async-inference requires --inference-overlap-steps to be positive.")
     if not math.isfinite(args.strict_sync_start_delay) or args.strict_sync_start_delay < 0:
         raise ValueError("--strict-sync-start-delay must be finite and non-negative.")
+    if args.strict_async:
+        configured_action_count = args.max_scheduled_actions
+        if configured_action_count is None:
+            configured_action_count = args.steps_per_inference
+        if configured_action_count is None:
+            raise ValueError("--strict-async requires --steps-per-inference or --max-scheduled-actions.")
+        if args.strict_async_overlap_steps <= 0:
+            raise ValueError("--strict-async-overlap-steps must be positive.")
+        if args.strict_async_overlap_steps > configured_action_count:
+            raise ValueError("--strict-async-overlap-steps cannot exceed the fixed scheduled action count.")
 
 
 def _show_camera(obs: dict, policy_image: np.ndarray | None = None) -> bool:
@@ -445,7 +492,7 @@ def _run_real(args: Args) -> None:
                 inference_idx = 0
                 async_worker = (
                     _async_inference.AsyncInferenceWorker(policy_infer)
-                    if policy_infer is not None and args.async_inference
+                    if policy_infer is not None and (args.async_inference or args.strict_async)
                     else None
                 )
                 pending_async: _PendingAsyncRequest | None = None
@@ -480,8 +527,20 @@ def _run_real(args: Args) -> None:
                                     ),
                                     "async_future_state_applied": pending_async.future_state_applied,
                                     "async_target_start_timestamp": pending_async.target_start_timestamp,
+                                    "async_launch_timestamp": pending_async.launch_timestamp,
                                 }
                             )
+                            if args.strict_async:
+                                async_metrics.update(
+                                    {
+                                        "strict_async_mode": True,
+                                        "strict_async_overlap_steps": pending_async.overlap_steps,
+                                        "strict_async_overlap_window_ms": pending_async.overlap_window_ms,
+                                        "strict_async_target_start_timestamp": pending_async.target_start_timestamp,
+                                        "strict_async_launch_timestamp": pending_async.launch_timestamp,
+                                        "strict_async_boundary_wait_ms": chunk_boundary_wait_ms,
+                                    }
+                                )
                             pending_async = None
                         else:
                             obs = env.get_obs()
@@ -533,7 +592,12 @@ def _run_real(args: Args) -> None:
                             args=args,
                             start_timestamp=schedule_start_timestamp,
                         )
-                        schedule_mode = "strict_sync" if args.strict_sync else "timestamp_filter"
+                        if args.strict_async:
+                            schedule_mode = "strict_async"
+                        elif args.strict_sync:
+                            schedule_mode = "strict_sync"
+                        else:
+                            schedule_mode = "timestamp_filter"
 
                         telemetry_recorder.write(
                             _telemetry.build_inference_record(
@@ -592,20 +656,34 @@ def _run_real(args: Args) -> None:
                             iter_idx=iter_idx,
                             dt=dt,
                             timestamps=timestamps,
-                            strict_sync=args.strict_sync,
+                            strict_scheduled=args.strict_sync or args.strict_async,
                         )
 
                         if async_worker is not None and len(scheduled_actions) > 0:
-                            overlap_steps = min(args.inference_overlap_steps, len(scheduled_actions))
-                            target_start_timestamp = float(timestamps[-1] + dt)
-                            launch_timestamp = target_start_timestamp - overlap_steps * dt
-                            launch_monotonic = loop_start + max(0.0, launch_timestamp - eval_start_time)
-                            precise_wait(launch_monotonic)
+                            if args.strict_async:
+                                overlap_steps = args.strict_async_overlap_steps
+                                launch_timing = _strict_async_launch_timing(
+                                    timestamps=timestamps,
+                                    dt=dt,
+                                    overlap_steps=overlap_steps,
+                                    loop_start_monotonic=loop_start,
+                                    eval_start_time=eval_start_time,
+                                )
+                            else:
+                                overlap_steps = min(args.inference_overlap_steps, len(scheduled_actions))
+                                launch_timing = _strict_async_launch_timing(
+                                    timestamps=timestamps,
+                                    dt=dt,
+                                    overlap_steps=overlap_steps,
+                                    loop_start_monotonic=loop_start,
+                                    eval_start_time=eval_start_time,
+                                )
+                            precise_wait(launch_timing.launch_monotonic)
 
                             launch_obs = env.get_obs()
                             launch_policy_obs = _policy_observation_from_env_obs(launch_obs, args.prompt)
                             future_state_applied = False
-                            if args.async_future_state:
+                            if args.async_inference and args.async_future_state:
                                 launch_policy_obs = _async_inference.apply_future_state(
                                     launch_policy_obs, scheduled_actions[-1]
                                 )
@@ -617,9 +695,10 @@ def _run_real(args: Args) -> None:
                             )
                             pending_async = _PendingAsyncRequest(
                                 request=request,
-                                target_start_timestamp=target_start_timestamp,
+                                target_start_timestamp=launch_timing.target_start_timestamp,
+                                launch_timestamp=launch_timing.launch_timestamp,
                                 overlap_steps=overlap_steps,
-                                overlap_window_ms=1000 * overlap_steps * dt,
+                                overlap_window_ms=launch_timing.overlap_window_ms,
                                 future_state_applied=future_state_applied,
                                 state=launch_policy_obs["observation/state"],
                             )
@@ -628,7 +707,7 @@ def _run_real(args: Args) -> None:
                                 "target_start=%.6f, future_state=%s",
                                 request.request_id,
                                 overlap_steps,
-                                target_start_timestamp,
+                                launch_timing.target_start_timestamp,
                                 future_state_applied,
                             )
 
