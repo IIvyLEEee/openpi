@@ -221,3 +221,5 @@ bash scripts/train_libero_compare_autodl.sh staged
 `staged` 成功完成同步阶段后才开始延迟阶段；失败则停止，不用不完整权重继续。重启同一路线会恢复已有完整 checkpoint，已完成阶段根据 marker 跳过。日志位于 `logs/libero_compare_40k_b128/`，W&B group 为 `pi05_async_40k_b128_compare`。每个路线使用独立的 torchrun rendezvous；启动锁阻止重复运行同一路线。
 
 checkpoint 仍每 1000 steps 保存，只留各活动阶段最新完整 checkpoint；共享 `pytorch_checkpoint_lock_path` 使写入及旧文件清理串行执行，避免两个实验同时写入临时 checkpoint 超出个人额度。同步 30k 完成后保留模型、metadata 和 norm stats，移除该已完成阶段的 optimizer；延迟阶段使用新的 optimizer。四步启动验证的模型/metadata/stats 归档到 `~/openpi-validation/full_data_startup_a800/4`，其短程 optimizer 已清理，为正式实验腾出存储空间。
+
+两路线已于 2026-10-12 在 tmux session `pi05-direct-40k`、`pi05-staged-40k` 启动，并完成多步真实优化，峰值 allocated 约 54.4 GB/卡、预热后约 9.8 秒/步。W&B 服务端确认两 run 均为 running、同一 comparison group，直接延迟的条件年龄最大 5，同步为 0。[直接延迟 40k](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/0ghenb07)；[同步 30k](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/wr08liy0)。阶段二成功启动后会创建独立 W&B run。实际配置与启动核验分别保存在 `logs/libero_compare_40k_b128/experiment_manifest.json`、`wandb_startup_verified.json`。
