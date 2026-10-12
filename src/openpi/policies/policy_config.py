@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 import pathlib
@@ -52,7 +53,7 @@ def create_trained_policy(
     logging.info("Loading model...")
     if is_pytorch:
         model = train_config.model.load_pytorch(train_config, weight_path)
-        model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
+        model.paligemma_with_expert.to_bfloat16_for_selected_params(train_config.model.dtype)
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
@@ -91,4 +92,45 @@ def create_trained_policy(
         metadata=train_config.policy_metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
+    )
+
+
+def create_async_libero_policy(
+    train_config: _config.TrainConfig,
+    checkpoint_dir: pathlib.Path | str,
+    *,
+    vlm_device: str = "cuda:0",
+    expert_device: str = "cuda:1",
+    num_steps: int = 10,
+):
+    """Load one strict dual-state checkpoint, then place each system on its own device."""
+    from openpi.policies.dual_system_policy import DualSystemPolicy
+
+    if not isinstance(train_config.data, _config.LeRobotLiberoDataConfig):
+        raise ValueError("This state-only adapter currently supports LIBERO")
+    if not getattr(train_config.model, "continuous_state_input", False) or not train_config.model.discrete_state_input:
+        raise ValueError("The asynchronous LIBERO config must enable both state inputs")
+    if train_config.data.extra_delta_transform:
+        raise ValueError("Asynchronous LIBERO requires the native delta action convention")
+    train_config = dataclasses.replace(
+        train_config, model=dataclasses.replace(train_config.model, pytorch_compile_mode=None)
+    )
+    checkpoint_dir = download.maybe_download(str(checkpoint_dir))
+    if not (checkpoint_dir / "model.safetensors").exists():
+        raise ValueError("Asynchronous inference requires a trained PyTorch model.safetensors checkpoint")
+    # Loading on CPU avoids temporarily putting both systems on the same GPU.
+    policy = create_trained_policy(train_config, checkpoint_dir, pytorch_device="cpu")
+    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
+    system2, system1 = policy._model.split_for_inference(vlm_device, expert_device)  # noqa: SLF001
+    return DualSystemPolicy(
+        system2,
+        system1,
+        prefix_transforms=[policy._input_transform],  # noqa: SLF001
+        state_transforms=[
+            transforms.Normalize({"state": norm_stats["state"]}, use_quantiles=data_config.use_quantile_norm),
+            transforms.PadStatesAndActions(train_config.model.action_dim),
+        ],
+        output_transforms=[policy._output_transform],  # noqa: SLF001
+        num_steps=num_steps,
     )

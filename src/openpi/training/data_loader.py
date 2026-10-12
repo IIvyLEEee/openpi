@@ -13,6 +13,7 @@ import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
+from openpi.training.delayed_dataset import DelayedObservationDataset
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
@@ -137,9 +138,16 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
+    if data_config.episodes is not None and (
+        not data_config.episodes or data_config.episodes != list(range(len(data_config.episodes)))
+    ):
+        # The pinned LeRobot indexes episode_data_index by the original episode ID.
+        raise ValueError("This LeRobot version requires an episode prefix [0, ..., N-1]")
+
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        episodes=data_config.episodes,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
@@ -180,15 +188,17 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
             )
         norm_stats = data_config.norm_stats
 
-    return TransformedDataset(
-        dataset,
-        [
-            *data_config.repack_transforms.inputs,
-            *data_config.data_transforms.inputs,
-            _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.model_transforms.inputs,
-        ],
-    )
+    input_transforms = [
+        *data_config.repack_transforms.inputs,
+        *data_config.data_transforms.inputs,
+        _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+        *data_config.model_transforms.inputs,
+    ]
+    if data_config.prefix_delay_max:
+        if data_config.repo_id == "fake" or data_config.rlds_data_dir is not None:
+            raise ValueError("Delayed prefixes require a LeRobot episode dataset")
+        return DelayedObservationDataset(dataset, _transforms.compose(input_transforms), data_config.prefix_delay_max)
+    return TransformedDataset(dataset, input_transforms)
 
 
 def transform_iterable_dataset(
@@ -299,6 +309,12 @@ def create_torch_data_loader(
             execute in the main process.
         seed: The seed to use for shuffling the data.
     """
+    if getattr(model_config, "continuous_state_input", False) and framework != "pytorch":
+        raise NotImplementedError("Dual-state Pi05 training requires framework='pytorch'")
+    if data_config.prefix_delay_max < 0:
+        raise ValueError("prefix_delay_max must be nonnegative")
+    if data_config.prefix_delay_max > getattr(model_config, "prefix_delay_max", 0):
+        raise ValueError("Dataset prefix delay exceeds the model's delay embedding range")
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 

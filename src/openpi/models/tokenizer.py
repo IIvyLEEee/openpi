@@ -12,8 +12,9 @@ import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48):
+    def __init__(self, max_len: int = 48, *, truncate: bool = True):
         self._max_len = max_len
+        self._truncate = truncate
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
@@ -38,6 +39,8 @@ class PaligemmaTokenizer:
             tokens = tokens + padding
         else:
             if len(tokens) > self._max_len:
+                if not self._truncate:
+                    raise ValueError(f"Prompt has {len(tokens)} tokens, exceeds max_token_len={self._max_len}")
                 logging.warning(
                     f"Token length ({len(tokens)}) exceeds max length ({self._max_len}), truncating. "
                     "Consider increasing the `max_token_len` in your model config if this happens frequently."

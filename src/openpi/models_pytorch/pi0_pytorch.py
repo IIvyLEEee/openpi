@@ -1,6 +1,7 @@
 import logging
 import math
 
+import safetensors.torch
 import torch
 from torch import Tensor
 from torch import nn
@@ -8,6 +9,7 @@ import torch.nn.functional as F  # noqa: N812
 
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
+from openpi.models_pytorch.prefix_condition import PrefixCondition
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
 
@@ -86,6 +88,7 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.continuous_state_input = config.continuous_state_input
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -99,6 +102,12 @@ class PI0Pytorch(nn.Module):
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, config.action_dim)
+
+        if self.pi05 and self.continuous_state_input:
+            self.state_proj = nn.Linear(config.action_dim, action_expert_config.width)
+        if config.prefix_delay_max:
+            self.delay_embedding = nn.Embedding(config.prefix_delay_max + 1, action_expert_config.width)
+            nn.init.zeros_(self.delay_embedding.weight)
 
         if self.pi05:
             self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
@@ -235,13 +244,13 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks
 
-    def embed_suffix(self, state, noisy_actions, timestep):
+    def embed_suffix(self, state, noisy_actions, timestep, prefix_age=None):
         """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
         embs = []
         pad_masks = []
         att_masks = []
 
-        if not self.pi05:
+        if not self.pi05 or self.continuous_state_input:
             if self.state_proj.weight.dtype == torch.float32:
                 state = state.to(torch.float32)
 
@@ -272,6 +281,9 @@ class PI0Pytorch(nn.Module):
             return self.action_in_proj(noisy_actions)
 
         action_emb = self._apply_checkpoint(action_proj_func, noisy_actions)
+        if hasattr(self, "delay_embedding"):
+            prefix_age = self._prefix_age(state, prefix_age)
+            action_emb = action_emb + self.delay_embedding(prefix_age)[:, None, :]
 
         if not self.pi05:
             time_emb = time_emb[:, None, :].expand_as(action_emb)
@@ -329,7 +341,9 @@ class PI0Pytorch(nn.Module):
         u_t = noise - actions
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+            state, x_t, time, getattr(observation, "prefix_age", None)
+        )
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
             == torch.bfloat16
@@ -376,12 +390,24 @@ class PI0Pytorch(nn.Module):
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        bsize = observation.state.shape[0]
+        # Keep the same noise draw order as the original sampler.
         if noise is None:
-            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-            noise = self.sample_noise(actions_shape, device)
+            noise = self.sample_noise(
+                (observation.state.shape[0], self.config.action_horizon, self.config.action_dim), device
+            )
+        condition = self.encode_prefix(observation)
+        return self.sample_actions_from_prefix(
+            observation.state,
+            condition,
+            noise=noise,
+            num_steps=num_steps,
+            prefix_age=getattr(observation, "prefix_age", None),
+        )
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+    @torch.no_grad()
+    def encode_prefix(self, observation) -> PrefixCondition:
+        """System 2: encode a synchronized image/task/state snapshot, without running the expert."""
+        images, img_masks, lang_tokens, lang_masks, _state = self._preprocess_observation(observation, train=False)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
@@ -398,6 +424,40 @@ class PI0Pytorch(nn.Module):
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+        return PrefixCondition(tuple(past_key_values), prefix_pad_masks)
+
+    def _prefix_age(self, state, prefix_age):
+        if prefix_age is None:
+            return torch.zeros(state.shape[0], dtype=torch.long, device=state.device)
+        prefix_age = torch.as_tensor(prefix_age, device=state.device)
+        if prefix_age.ndim != 1 or prefix_age.shape[0] != state.shape[0]:
+            raise ValueError("prefix_age must have shape [batch]")
+        if prefix_age.dtype not in (torch.int32, torch.int64):
+            raise ValueError("prefix_age must contain integer control ticks")
+        if torch.any(prefix_age < 0) or torch.any(prefix_age > self.config.prefix_delay_max):
+            raise ValueError(f"Prefix age must be in [0, {self.config.prefix_delay_max}]")
+        return prefix_age.long()
+
+    @torch.no_grad()
+    def sample_actions_from_prefix(
+        self, state, condition: PrefixCondition, *, noise=None, num_steps=10, prefix_age=None
+    ):
+        """System 1: ordinary multi-step flow sampling with current normalized state and a fixed prefix."""
+        if num_steps < 1:
+            raise ValueError("num_steps must be positive")
+        if state.ndim != 2 or state.shape != (condition.pad_mask.shape[0], self.config.action_dim):
+            raise ValueError("state must be padded to [prefix_batch, action_dim]")
+        if state.device != condition.pad_mask.device:
+            raise ValueError("Move the prefix to the expert device before sampling")
+        if prefix_age is not None:
+            prefix_age = self._prefix_age(state, prefix_age)
+        bsize = state.shape[0]
+        device = state.device
+        if noise is None:
+            noise = self.sample_noise((bsize, self.config.action_horizon, self.config.action_dim), device)
+        if noise.shape != (bsize, self.config.action_horizon, self.config.action_dim) or noise.device != device:
+            raise ValueError("noise shape/device must match the state and configured action horizon")
+        past_key_values = condition.as_cache()
 
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
@@ -408,10 +468,11 @@ class PI0Pytorch(nn.Module):
             expanded_time = time.expand(bsize)
             v_t = self.denoise_step(
                 state,
-                prefix_pad_masks,
+                condition.pad_mask,
                 past_key_values,
                 x_t,
                 expanded_time,
+                prefix_age,
             )
 
             # Euler step - use new tensor assignment instead of in-place operation
@@ -426,9 +487,12 @@ class PI0Pytorch(nn.Module):
         past_key_values,
         x_t,
         timestep,
+        prefix_age=None,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+            state, x_t, timestep, prefix_age
+        )
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
@@ -460,3 +524,49 @@ class PI0Pytorch(nn.Module):
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
+
+    def load_pretrained_weights(self, path, *, allow_new_parameters=False):
+        """Allowlist-based base-checkpoint initialization; inference and resume remain strict."""
+        missing, unexpected = safetensors.torch.load_model(self, path, strict=False)
+        allowed = set()
+        if allow_new_parameters:
+            if self.pi05 and self.continuous_state_input:
+                allowed.update(("state_proj.weight", "state_proj.bias"))
+            if hasattr(self, "delay_embedding"):
+                allowed.add("delay_embedding.weight")
+        if set(missing) - allowed or unexpected:
+            raise RuntimeError(f"Checkpoint mismatch: missing={sorted(missing)}, unexpected={sorted(unexpected)}")
+        if missing:
+            logging.info("Initialized new parameters absent from base checkpoint: %s", sorted(missing))
+
+    def split_for_inference(self, vlm_device, expert_device):
+        """Place only VLM modules on System 2 and only expert modules on System 1. No weight copies."""
+        systems = []
+        for index, device in enumerate((vlm_device, expert_device)):
+            system = PI0Pytorch.__new__(PI0Pytorch)
+            nn.Module.__init__(system)
+            system.config = self.config
+            system.pi05 = self.pi05
+            system.continuous_state_input = self.continuous_state_input
+            system.gradient_checkpointing_enabled = False
+            backbone = PaliGemmaWithExpertModel.__new__(PaliGemmaWithExpertModel)
+            nn.Module.__init__(backbone)
+            if index == 0:
+                backbone.paligemma = self.paligemma_with_expert.paligemma
+            else:
+                backbone.gemma_expert = self.paligemma_with_expert.gemma_expert
+                for name in (
+                    "action_in_proj",
+                    "action_out_proj",
+                    "state_proj",
+                    "time_mlp_in",
+                    "time_mlp_out",
+                    "action_time_mlp_in",
+                    "action_time_mlp_out",
+                    "delay_embedding",
+                ):
+                    if hasattr(self, name):
+                        setattr(system, name, getattr(self, name))
+            system.paligemma_with_expert = backbone
+            systems.append(system.to(device).eval())
+        return tuple(systems)

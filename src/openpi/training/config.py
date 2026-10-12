@@ -65,6 +65,8 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional LeRobot episode prefix [0, ..., N-1]; None loads the full dataset.
+    episodes: list[int] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -89,6 +91,9 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # LeRobot-only augmentation: past images/state for the prefix, current state/actions for the expert.
+    prefix_delay_max: int = 0
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -130,7 +135,9 @@ class ModelTransformFactory(GroupFactory):
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            _tokenizer.PaligemmaTokenizer(
+                                model_config.max_token_len, truncate=not model_config.continuous_state_input
+                            ),
                             discrete_state_input=model_config.discrete_state_input,
                         ),
                         _transforms.PadStatesAndActions(model_config.action_dim),
@@ -167,10 +174,14 @@ class ModelTransformFactory(GroupFactory):
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
+    # Select an episode prefix [0, ..., N-1] for a short run without downloading the full dataset.
+    episodes: list[int] | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
     base_config: tyro.conf.Suppress[DataConfig | None] = None
+    # CLI-visible augmentation setting (base_config is deliberately suppressed).
+    prefix_delay_max: int = 0
 
     @abc.abstractmethod
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -182,9 +193,11 @@ class DataConfigFactory(abc.ABC):
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            episodes=self.episodes,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
+            prefix_delay_max=self.prefix_delay_max,
         )
 
     def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
@@ -485,6 +498,11 @@ class TrainConfig:
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
 
+    # Allow only the newly introduced dual-state/age parameters to be absent when initializing from a base checkpoint.
+    pytorch_allow_new_parameters: bool = False
+    # Applied to the PyTorch VLM/vision parameter group's learning rate.
+    pytorch_vlm_lr_scale: float = 1.0
+
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -516,6 +534,8 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # PyTorch-only retention; None preserves its existing behavior. Periodic keep_period saves are exempt.
+    pytorch_keep_last_checkpoints: int | None = None
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -554,6 +574,8 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.pytorch_keep_last_checkpoints is not None and self.pytorch_keep_last_checkpoints < 1:
+            raise ValueError("pytorch_keep_last_checkpoints must be positive")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -762,6 +784,33 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     #
+    # Dual proprio, asynchronous prefix conditioning; ordinary multi-step flow matching.
+    # Set --data.prefix-delay-max=0 for the initial synchronous dual-state stage.
+    TrainConfig(
+        name="pi05_libero_async",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            max_token_len=256,
+            discrete_state_input=True,
+            continuous_state_input=True,
+            prefix_delay_max=5,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            prefix_delay_max=5,
+            extra_delta_transform=False,
+        ),
+        batch_size=256,
+        lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=1_000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-6),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        pytorch_allow_new_parameters=True,
+        pytorch_vlm_lr_scale=0.1,
+        num_train_steps=30_000,
+    ),
     # Fine-tuning Aloha configs.
     #
     # This is a test config that is used to illustate how train on a custom LeRobot dataset.

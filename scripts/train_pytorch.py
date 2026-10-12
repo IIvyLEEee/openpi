@@ -45,6 +45,7 @@ import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
+from openpi.training.pytorch_optimizer import parameter_groups
 
 
 def init_logging():
@@ -152,7 +153,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         return
 
     # Only save if it's time to save or if it's the final step
-    if (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
+    if (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps:
         # Create temporary directory for atomic checkpoint saving
         final_ckpt_dir = config.checkpoint_dir / f"{global_step}"
         tmp_ckpt_dir = config.checkpoint_dir / f"tmp_{global_step}"
@@ -189,9 +190,28 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
 
         logging.info(f"Saved checkpoint at step {global_step} -> {final_ckpt_dir}")
 
+        if config.pytorch_keep_last_checkpoints is not None:
+            complete = sorted(
+                (
+                    path
+                    for path in config.checkpoint_dir.iterdir()
+                    if path.is_dir()
+                    and path.name.isdigit()
+                    and int(path.name) <= global_step
+                    and all((path / name).is_file() for name in ("model.safetensors", "optimizer.pt", "metadata.pt"))
+                ),
+                key=lambda path: int(path.name),
+                reverse=True,
+            )
+            for path in complete[config.pytorch_keep_last_checkpoints :]:
+                if config.keep_period and int(path.name) % config.keep_period == 0:
+                    continue
+                shutil.rmtree(path)
+                logging.info(f"Removed older checkpoint: {path}")
+
         # Log checkpoint to wandb
         if config.wandb_enabled:
-            wandb.log({"checkpoint_step": global_step}, step=global_step)
+            wandb.log({"checkpoint_step": global_step}, step=global_step, commit=False)
 
 
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
@@ -307,6 +327,8 @@ def log_memory_usage(device, step, phase="unknown"):
 
 
 def train_loop(config: _config.TrainConfig):
+    if config.pytorch_allow_new_parameters and config.pytorch_weight_path is None and not config.resume:
+        raise ValueError("Base-checkpoint initialization requires --pytorch-weight-path (or use --resume)")
     use_ddp, local_rank, device = setup_ddp()
     is_main = (not use_ddp) or (dist.get_rank() == 0)
     set_seed(config.seed, local_rank)
@@ -439,13 +461,12 @@ def train_loop(config: _config.TrainConfig):
         )
 
     # Load weights from weight_loader if specified (for fine-tuning)
-    if config.pytorch_weight_path is not None:
+    if config.pytorch_weight_path is not None and not resuming:
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
-        )
+        model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        model_to_load.load_pretrained_weights(model_path, allow_new_parameters=config.pytorch_allow_new_parameters)
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
     # Optimizer + learning rate schedule from config
@@ -456,7 +477,7 @@ def train_loop(config: _config.TrainConfig):
 
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        model.parameters(),
+        parameter_groups(model.module if use_ddp else model, peak_lr, config.pytorch_vlm_lr_scale),
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -523,7 +544,7 @@ def train_loop(config: _config.TrainConfig):
 
             # Update LR
             for pg in optim.param_groups:
-                pg["lr"] = lr_schedule(global_step)
+                pg["lr"] = lr_schedule(global_step) * pg.get("lr_scale", 1.0)
 
             # Forward pass
             losses = model(observation, actions)
@@ -557,13 +578,17 @@ def train_loop(config: _config.TrainConfig):
 
             # Collect stats
             if is_main:
-                infos.append(
-                    {
-                        "loss": loss.item(),
-                        "learning_rate": optim.param_groups[0]["lr"],
-                        "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                    }
-                )
+                info = {
+                    "loss": loss.item(),
+                    "learning_rate": optim.param_groups[0]["lr"],
+                    "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                }
+                for index, group in enumerate(optim.param_groups):
+                    info[f"learning_rate/{group.get('name', f'group_{index}')}"] = float(group["lr"])
+                age = observation.prefix_age
+                info["prefix_age_mean"] = 0.0 if age is None else age.float().mean().item()
+                info["prefix_age_max"] = 0.0 if age is None else age.max().item()
+                infos.append(info)
 
             if is_main and (global_step % config.log_interval == 0):
                 elapsed = time.time() - start_time
@@ -590,12 +615,15 @@ def train_loop(config: _config.TrainConfig):
                     log_payload = {
                         "loss": avg_loss,
                         "learning_rate": avg_lr,
-                        "step": global_step,
+                        "step": global_step + 1,
                         "time_per_step": elapsed / config.log_interval,
                     }
                     if avg_grad_norm is not None:
                         log_payload["grad_norm"] = avg_grad_norm
-                    wandb.log(log_payload, step=global_step)
+                    for key in infos[0]:
+                        if key.startswith(("learning_rate/", "prefix_age_")):
+                            log_payload[key] = sum(info[key] for info in infos) / len(infos)
+                    wandb.log(log_payload, step=global_step + 1, commit=False)
 
                 start_time = time.time()
                 infos = []  # Reset stats collection

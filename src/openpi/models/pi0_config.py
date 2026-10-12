@@ -32,9 +32,20 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # PyTorch-only: let the action expert read current continuous state independently of the VLM.
+    continuous_state_input: bool = False
+    # Maximum age of a cached prefix, in dataset/control ticks. Zero disables the age embedding.
+    prefix_delay_max: int = 0
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
+        if self.prefix_delay_max < 0:
+            raise ValueError("prefix_delay_max must be nonnegative")
+        if self.continuous_state_input and not self.pi05:
+            raise ValueError("Pi0 already has continuous state input; this option is for Pi05")
+        if self.prefix_delay_max and not self.continuous_state_input:
+            raise ValueError("Delayed prefixes require continuous_state_input")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
@@ -56,6 +67,8 @@ class Pi0Config(_model.BaseModelConfig):
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
+        if self.continuous_state_input or self.prefix_delay_max:
+            raise NotImplementedError("Dual-state/asynchronous Pi05 is currently implemented only in PyTorch")
         from openpi.models.pi0 import Pi0
 
         return Pi0(self, rngs=nnx.Rngs(rng))
