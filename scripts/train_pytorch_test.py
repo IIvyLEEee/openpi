@@ -1,10 +1,12 @@
 import dataclasses
 
+import filelock
 import pytest
 import torch
 
 from openpi.training.config import DataConfig
 from openpi.training.config import get_config
+from scripts import train_pytorch
 from scripts.train_pytorch import load_checkpoint
 from scripts.train_pytorch import save_checkpoint
 
@@ -61,3 +63,22 @@ def test_checkpoint_retention_preserves_periodic_and_incomplete_directories(tmp_
     assert (config.checkpoint_dir / "5" / "metadata.pt").is_file()
     with pytest.raises(ValueError, match="must be positive"):
         dataclasses.replace(config, pytorch_keep_last_checkpoints=0)
+
+
+def test_shared_save_lock_is_held_and_released_on_error(tmp_path, monkeypatch):
+    config = dataclasses.replace(
+        get_config("pi05_libero_async"),
+        pytorch_checkpoint_lock_path=str(tmp_path / "shared" / ".save.lock"),
+        num_train_steps=1,
+    )
+
+    def failing_writer(*_args):
+        with pytest.raises(filelock.Timeout):
+            filelock.FileLock(config.pytorch_checkpoint_lock_path).acquire(timeout=0)
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(train_pytorch, "_save_checkpoint", failing_writer)
+    with pytest.raises(RuntimeError, match="write failed"):
+        save_checkpoint(None, None, 1, config, is_main=True, data_config=DataConfig())
+    with filelock.FileLock(config.pytorch_checkpoint_lock_path, timeout=0):
+        pass

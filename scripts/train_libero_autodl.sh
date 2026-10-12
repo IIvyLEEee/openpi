@@ -21,7 +21,14 @@ case "$phase" in
         delay=5
         init_flags=(--no-pytorch-allow-new-parameters)
         ;;
-    *) printf 'Usage: %s {sync|delay} [extra training arguments]\n' "$0" >&2; exit 2 ;;
+    direct-delay)
+        init_checkpoint="${INIT_CHECKPOINT:-$OPENPI_LOCAL_ROOT/models/pi05_base_pytorch}"
+        steps="${TRAIN_STEPS:-40000}"
+        warmup="${WARMUP_STEPS:-1000}"
+        delay=5
+        init_flags=(--pytorch-allow-new-parameters)
+        ;;
+    *) printf 'Usage: %s {sync|delay|direct-delay} [extra training arguments]\n' "$0" >&2; exit 2 ;;
 esac
 
 : "${WANDB_API_KEY:?Configure W&B in ~/.config/openpi/wandb.env or export WANDB_API_KEY}"
@@ -35,4 +42,5 @@ exec "$OPENPI_ENV_PREFIX/bin/torchrun" --standalone --nnodes=1 --nproc_per_node=
     --num-train-steps "$steps" --data.prefix-delay-max "$delay" \
     --lr-schedule.warmup-steps "$warmup" --lr-schedule.decay-steps "$steps" \
     --log-interval 10 --save-interval 1000 \
+    --pytorch-checkpoint-lock-path "${CHECKPOINT_LOCK_PATH:-$OPENPI_REPO_ROOT/checkpoints/.save.lock}" \
     --pytorch-keep-last-checkpoints 1 --keep-period None --wandb-enabled "$@"

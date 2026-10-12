@@ -517,6 +517,8 @@ class TrainConfig:
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.
     checkpoint_base_dir: str = "./checkpoints"
+    # Serialize PyTorch checkpoint writes across experiments sharing a storage quota.
+    pytorch_checkpoint_lock_path: str | None = None
 
     # Random seed that will be used by random generators during training.
     seed: int = 42

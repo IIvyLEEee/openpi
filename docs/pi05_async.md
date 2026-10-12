@@ -199,3 +199,25 @@ launcher 默认保存间隔 1,000 steps，只保留最新完整 checkpoint；未
 [全量启动验证 W&B](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/ci4ploeh)。远程证据位于 `logs/libero_integrity.json`、`logs/full_data_preparation.log` 和 `logs/full_data_checkpoint_verification_3.json`。本地保存于 `logs/autodl_a800_20261012/`。该运行用于工程验证，step 数不代表模型已收敛。
 
 随后严格恢复模型、optimizer 和 metadata，从已完成的第 3 步继续至第 4 步，并成功保存及再次核验；W&B 同一 run 的 step/checkpoint_step 均为 4。retention 已移除第 3 步目录，最新完整 checkpoint 为 `checkpoints/pi05_libero_async/full_data_startup_a800/4`。恢复日志与最终核验分别为 `logs/full_data_resume.log`、`logs/full_data_checkpoint_verification_4.json`。验证结束后四张 GPU 均已释放；正式同步实验使用上面的默认 launcher，从 base 权重启动新的 `dual_state_sync_a800` 实验。
+
+## 两组各两卡的 40k 对比实验
+
+按用户指定方案，两个路线同时运行，均使用全部 40 个任务、global batch 128（每卡 64）、seed 42、VLM/expert full fine-tuning，以及同一套全量 norm stats。
+
+| 路线 | GPU | 实验名 | steps / warmup | prefix delay |
+|---|---|---|---|---|
+| 直接延迟 | 0、1 | `dual_state_direct_delay_40k_b128` | 40000 / 1000 | 0–5 ticks |
+| 先同步 | 2、3 | `dual_state_sync_30k_b128` | 30000 / 1000 | 0 |
+| 接延迟 | 2、3 | `dual_state_sync30k_delay10k_b128` | 10000 / 500 | 0–5 ticks |
+
+前两项均从原 base 初始化新增参数。第三项自动严格加载同步 30000-step 模型，重新初始化 optimizer 和 LR schedule；各阶段的 cosine decay 覆盖该阶段的总 steps，expert / VLM peak LR 仍为 5e-5 / 5e-6。两个路线包含不同 LR schedule，比较结果应按这套实际训练方案解释。
+
+```bash
+# 分别在两个持久 shell / tmux session 启动。
+bash scripts/train_libero_compare_autodl.sh direct
+bash scripts/train_libero_compare_autodl.sh staged
+```
+
+`staged` 成功完成同步阶段后才开始延迟阶段；失败则停止，不用不完整权重继续。重启同一路线会恢复已有完整 checkpoint，已完成阶段根据 marker 跳过。日志位于 `logs/libero_compare_40k_b128/`，W&B group 为 `pi05_async_40k_b128_compare`。每个路线使用独立的 torchrun rendezvous；启动锁阻止重复运行同一路线。
+
+checkpoint 仍每 1000 steps 保存，只留各活动阶段最新完整 checkpoint；共享 `pytorch_checkpoint_lock_path` 使写入及旧文件清理串行执行，避免两个实验同时写入临时 checkpoint 超出个人额度。同步 30k 完成后保留模型、metadata 和 norm stats，移除该已完成阶段的 optimizer；延迟阶段使用新的 optimizer。四步启动验证的模型/metadata/stats 归档到 `~/openpi-validation/full_data_startup_a800/4`，其短程 optimizer 已清理，为正式实验腾出存储空间。

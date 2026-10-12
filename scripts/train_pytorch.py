@@ -23,6 +23,7 @@ Multi-Node Training:
 
 """
 
+import contextlib
 import dataclasses
 import gc
 import logging
@@ -31,6 +32,7 @@ import platform
 import shutil
 import time
 
+import filelock
 import jax
 import numpy as np
 import safetensors.torch
@@ -148,6 +150,19 @@ def get_model_parameters(model):
 
 
 def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
+    if not is_main or not (
+        (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps
+    ):
+        return
+    lock_path = config.pytorch_checkpoint_lock_path
+    if lock_path:
+        os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+    lock = filelock.FileLock(lock_path) if lock_path else contextlib.nullcontext()
+    with lock:
+        _save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
+
+
+def _save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
         return
