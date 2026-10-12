@@ -8,8 +8,8 @@ export PATH="$OPENPI_ENV_PREFIX/bin:$HOME/.local/bin:$PATH"
 if [[ -f /etc/network_turbo ]]; then
     source /etc/network_turbo >/dev/null
 fi
-# Use AutoDL forwarding for GitHub/Hugging Face/W&B, and direct PyPI downloads.
-export no_proxy="${no_proxy:+$no_proxy,}pypi.org,files.pythonhosted.org"
+# Use forwarding for API traffic; the official dataset CDN is faster over a direct connection.
+export no_proxy="${no_proxy:+$no_proxy,}pypi.org,files.pythonhosted.org,us.aws.cdn.hf.co"
 export NO_PROXY="$no_proxy"
 if [[ -f "$HOME/.config/openpi/wandb.env" ]]; then
     source "$HOME/.config/openpi/wandb.env"
