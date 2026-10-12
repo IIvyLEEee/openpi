@@ -193,3 +193,9 @@ bash scripts/train_libero_autodl.sh sync --resume
 ```
 
 launcher 默认保存间隔 1,000 steps，只保留最新完整 checkpoint；未额外保留周期 checkpoint，适配个人存储额度。长程实验启动前，必须确认全量 stats 与数据已准备完成；这里的 batch 校准不等于已开始 30,000 steps 正式训练。
+
+全量准备已完成：1693 个 Parquet 共 34,938,730,091 bytes，逐文件与官方固定 commit 的 LFS SHA256 一致；全量 norm stats 覆盖 273465 帧，LeRobot Arrow cache 已构建。使用全量数据与全量 stats 的四卡启动验证完成三步（loss 0.1116、0.1011、0.1147），最后保存模型、optimizer、metadata 和相同 norm stats。核对 checkpoint 后，VLM 有 597 个参数的 optimizer 状态、expert/新增模块有 211 个；两组 moment 均有限且存在非零值，代表参数有实际变化。正常 warmup 1000 / decay 30000 保留。
+
+[全量启动验证 W&B](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/ci4ploeh)。远程证据位于 `logs/libero_integrity.json`、`logs/full_data_preparation.log` 和 `logs/full_data_checkpoint_verification_3.json`。本地保存于 `logs/autodl_a800_20261012/`。该运行用于工程验证，step 数不代表模型已收敛。
+
+随后严格恢复模型、optimizer 和 metadata，从已完成的第 3 步继续至第 4 步，并成功保存及再次核验；W&B 同一 run 的 step/checkpoint_step 均为 4。retention 已移除第 3 步目录，最新完整 checkpoint 为 `checkpoints/pi05_libero_async/full_data_startup_a800/4`。恢复日志与最终核验分别为 `logs/full_data_resume.log`、`logs/full_data_checkpoint_verification_4.json`。验证结束后四张 GPU 均已释放；正式同步实验使用上面的默认 launcher，从 base 权重启动新的 `dual_state_sync_a800` 实验。
