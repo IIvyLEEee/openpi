@@ -154,3 +154,42 @@ CUDA_VISIBLE_DEVICES=2 python scripts/train_pytorch.py pi05_libero_async \
 日志为 `logs/gpu_smoke_sync_20261012.log`、`logs/gpu_smoke_delay_20261012.log`；参数变化证据为 `logs/gpu_smoke_verification_20261012.json`。完整 checkpoint 分别位于 `checkpoints/pi05_libero_async/gpu_smoke_sync_20261012/2` 和 `checkpoints/pi05_libero_async/gpu_smoke_delay_20261012/2`。
 
 这次还修复了训练器最后一步保存的计数偏差，并验证保存后恢复的是已完成步数。短程训练没有测量任务成功率。全量微调需关闭上述 offline 选项、取消 `--data.episodes` 限制、重新计算全量 norm stats，并使用正常 warmup；不能使用这里的 smoke stats 作为全量统计。
+
+## AutoDL 四卡 A800（2026-10-12）
+
+独立环境为 `~/.conda/envs/openpi`：Python 3.11.17、PyTorch 2.7.1+cu126、Transformers 4.53.2，并应用五个官方 replacement 文件。原服务器环境未修改。四张 A800-SXM4-80GB 通过 NVLink 连接；实际 full fine-tuning 校准如下，未使用 LoRA。
+
+| global batch / 每卡 | prefix delay / workers 每进程 | 峰值 allocated | 训练步耗时 |
+|---|---|---|---|
+| 64 / 16 | 0 / 0 | rank 0：34.94 GB | 4.9、5.9 秒 |
+| 128 / 32 | 0–5 / 0 | rank 0：41.42 GB | 18.3、17.1 秒 |
+| 256 / 64 | 0–5 / 4 | 四卡：54.39–54.42 GB | 43.4 秒启动，随后 10.2、10.1 秒 |
+
+batch 256 的最终峰值 reserved 为 56.87–58.99 GB。三个校准都完成真实 backward/optimizer 更新；256 使用 episode 0–3，其余使用 episode 0，均使用 smoke stats。由于 delay 和 workers 不同，这些耗时不能用作只改变 batch 的性能比较，也不能用于判断任务成功率。[W&B batch 256 记录](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/gwuttmtu)。
+
+建议 global batch 256，每卡 64；同步阶段 30,000 steps、warmup 1,000，延迟阶段从同步 checkpoint 初始化新实验，10,000 steps、warmup 500。expert peak LR 为 5e-5，VLM 为 5e-6。step 数是初始实验预算，应结合 LIBERO rollout 评估选择 checkpoint。
+
+代码位于 `~/sharefs/mlsys/openpi`。raw 数据与 checkpoints 放在 sharefs；base 权重、依赖缓存和 Arrow cache 放在 `/root/autodl-tmp/$USER`。下载完整数据（1693 episodes、273465 frames、40 tasks）并生成全量 stats：
+
+```bash
+cd ~/sharefs/mlsys/openpi
+source scripts/autodl_env.sh
+python scripts/prepare_libero_autodl.py
+```
+
+本机测速中，官方 CDN 直连比 AutoDL 转发更快，环境脚本将 `us.aws.cdn.hf.co` 加入 `no_proxy`。如官方 API 超时，可在启动下载进程前设置 `HF_ENDPOINT=https://hf-mirror.com`，并将 `hf-mirror.com` 加入 `no_proxy` 与 `NO_PROXY`。已核对镜像返回相同不可变 commit `9dfa69510ea9e1613fc54112bc706444b686a231`；下载脚本仍固定该数据版本。
+
+W&B 凭据存放在 `~/.config/openpi/wandb.env`，由环境脚本加载。正式训练命令：
+
+```bash
+bash scripts/train_libero_autodl.sh sync
+
+# STEP 替换为已保存的同步 checkpoint 步数。
+INIT_CHECKPOINT="$PWD/checkpoints/pi05_libero_async/dual_state_sync_a800/STEP" \
+  bash scripts/train_libero_autodl.sh delay
+
+# 中断后恢复同一个同步实验。
+bash scripts/train_libero_autodl.sh sync --resume
+```
+
+launcher 默认保存间隔 1,000 steps，只保留最新完整 checkpoint；未额外保留周期 checkpoint，适配个人存储额度。长程实验启动前，必须确认全量 stats 与数据已准备完成；这里的 batch 校准不等于已开始 30,000 steps 正式训练。

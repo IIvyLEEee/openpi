@@ -31,7 +31,7 @@ exec "$OPENPI_ENV_PREFIX/bin/torchrun" --standalone --nnodes=1 --nproc_per_node=
     --exp-name "${EXP_NAME:-dual_state_${phase}_a800}" \
     --project-name "$WANDB_PROJECT" \
     --pytorch-weight-path "$init_checkpoint" "${init_flags[@]}" \
-    --batch-size "${BATCH_SIZE:-64}" --num-workers "${NUM_WORKERS:-4}" \
+    --batch-size "${BATCH_SIZE:-256}" --num-workers "${NUM_WORKERS:-4}" \
     --num-train-steps "$steps" --data.prefix-delay-max "$delay" \
     --lr-schedule.warmup-steps "$warmup" --lr-schedule.decay-steps "$steps" \
     --log-interval 10 --save-interval 1000 \
