@@ -249,3 +249,5 @@ CUDA_VISIBLE_DEVICES=2 MUJOCO_EGL_DEVICE_ID=2 \
 2026-10-13：取用户请求时两路线最新完整的 6000-step checkpoint，本地空闲 GPU 2、3 分别评估 direct-delay 与同步路线，各 200 episodes。远程训练继续运行。评估单独记录到 W&B group `pi05_libero_ckpt6000_rollout_20261013`，不写入正在训练的 run。
 
 本轮已完成：direct-delay 128/200（64.0%），同步 131/200（65.5%）。任务覆盖、初始状态、种子与成功计数核对通过，两组退出码均为 0；各 suite 的结果见 [评估报告](results/pi05_libero_ckpt6000_20261013.md)。按用户要求，视频仅保存在本地，W&B 只同步指标与 JSON 结果。后续需要在相同条件下比较两种 checkpoint 的真实双 worker 异步 rollout，以及受控 cache delay；本轮结果不能替代异步评估。
+
+同日使用官方 `pi05_libero` checkpoint 进行 Spatial 校准：复用同一评估入口、初始状态与随机种子，50/50（100%），退出码 0；我们的 direct/sync 6000-step checkpoint 分别为 40/50（80%）、37/50（74%）。评估统一关闭 torch.compile，与既有双状态配置一致。官方源文件经过 MD5/CRC32C 校验，使用官方 converter 转换并复制其 norm stats；详见 [官方 Spatial 校准报告](results/pi05_libero_official_spatial_20261013.md)。当前流程能评估 stock 模型的高成功率，但不能据此排除双状态模型路径的问题；训练步数、结构及训练配置差异仍需进一步验证。

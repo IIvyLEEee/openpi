@@ -76,6 +76,8 @@ def main(args: Args):
     if args.trials_per_task <= 0 or any(suite not in SUITES for suite in args.suites):
         raise ValueError("Use a positive trial count and the four supported LIBERO suites")
     config = get_config(args.config_name)
+    # Use the same eager PyTorch path for stock and dual-state checkpoints.
+    config = dataclasses.replace(config, model=dataclasses.replace(config.model, pytorch_compile_mode=None))
     if not 0 < args.replan_steps <= config.model.action_horizon:
         raise ValueError("Invalid action execution horizon")
     output = pathlib.Path(args.output_dir)
