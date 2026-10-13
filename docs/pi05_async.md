@@ -223,3 +223,29 @@ bash scripts/train_libero_compare_autodl.sh staged
 checkpoint 仍每 1000 steps 保存，只留各活动阶段最新完整 checkpoint；共享 `pytorch_checkpoint_lock_path` 使写入及旧文件清理串行执行，避免两个实验同时写入临时 checkpoint 超出个人额度。同步 30k 完成后保留模型、metadata 和 norm stats，移除该已完成阶段的 optimizer；延迟阶段使用新的 optimizer。四步启动验证的模型/metadata/stats 归档到 `~/openpi-validation/full_data_startup_a800/4`，其短程 optimizer 已清理，为正式实验腾出存储空间。
 
 两路线已于 2026-10-12 在 tmux session `pi05-direct-40k`、`pi05-staged-40k` 启动，并完成多步真实优化，峰值 allocated 约 54.4 GB/卡、预热后约 9.8 秒/步。W&B 服务端确认两 run 均为 running、同一 comparison group，直接延迟的条件年龄最大 5，同步为 0。[直接延迟 40k](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/0ghenb07)；[同步 30k](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/wr08liy0)。阶段二成功启动后会创建独立 W&B run。实际配置与启动核验分别保存在 `logs/libero_compare_40k_b128/experiment_manifest.json`、`wandb_startup_verified.json`。
+
+## 本地 checkpoint rollout
+
+`examples/libero/evaluate_checkpoint.py` 直接加载 PyTorch checkpoint 与其全量 norm stats，使用 OpenPI 固定的 LIBERO commit `f78abd68ee283de9f9be3c8f7e2a9ad60246e95c`。评估依赖单独安装到继承 OpenPI 的隔离环境，版本见 `examples/libero/requirements_eval.txt`；不修改训练环境。PyTorch 2.7 读取可信的官方 `.pruned_init` 文件时需要 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`。
+
+```bash
+git submodule update --init third_party/libero
+python -m venv --system-site-packages .venv-libero-eval
+.venv-libero-eval/bin/python -m pip install -r examples/libero/requirements_eval.txt
+# LIBERO_CONFIG_PATH 中的 config.yaml 应指向本地 LIBERO 的 bddl_files/init_states/assets。
+CUDA_VISIBLE_DEVICES=2 MUJOCO_EGL_DEVICE_ID=2 \
+  MUJOCO_GL=egl PYOPENGL_PLATFORM=egl JAX_PLATFORMS=cpu \
+  TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
+  PYTHONPATH=third_party/libero:$PYTHONPATH \
+  .venv-libero-eval/bin/python examples/libero/evaluate_checkpoint.py \
+    --args.checkpoint-dir /ABSOLUTE/CHECKPOINT/6000 \
+    --args.output-dir eval/results/YOUR_RUN/6000
+```
+
+默认协议：四个 suite 共 40 个任务，每任务使用官方初始状态 0–4，各 5 次，seed 7；10 个 flow steps，每次生成 10 个动作、执行前 5 个再获取新观测；最大控制步数 Spatial/Object/Goal/Long 分别为 220/280/300/520。这是同步 fresh-observation rollout，prefix age 为 0，不衡量异步部署表现。两 checkpoint 使用相同初始状态与逐 episode 随机种子。
+
+结果逐 episode 保存至 `episodes.jsonl`，汇总保存在 `summary.json`；`complete=true` 才表示完整评估。相同目录支持断点续跑，协议不一致时拒绝混写；仿真/模型异常直接中止，不混入正常失败样本。每个任务保存首个成功与首个失败视频。
+
+2026-10-13：取用户请求时两路线最新完整的 6000-step checkpoint，本地空闲 GPU 2、3 分别评估 direct-delay 与同步路线，各 200 episodes。远程训练继续运行。评估单独记录到 W&B group `pi05_libero_ckpt6000_rollout_20261013`，不写入正在训练的 run。
+
+本轮已完成：direct-delay 128/200（64.0%），同步 131/200（65.5%）。任务覆盖、初始状态、种子与成功计数核对通过，两组退出码均为 0；各 suite 的结果见 [评估报告](results/pi05_libero_ckpt6000_20261013.md)。按用户要求，视频仅保存在本地，W&B 只同步指标与 JSON 结果。后续需要在相同条件下比较两种 checkpoint 的真实双 worker 异步 rollout，以及受控 cache delay；本轮结果不能替代异步评估。

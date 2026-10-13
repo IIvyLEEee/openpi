@@ -1,0 +1,7 @@
+# Install in an isolated environment with the existing OpenPI dependencies.
+robosuite==1.4.1
+bddl==1.0.1
+gym==0.25.2
+future==0.18.2
+easydict==1.9
+mujoco==2.3.7
