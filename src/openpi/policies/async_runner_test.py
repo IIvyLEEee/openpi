@@ -3,8 +3,10 @@ import threading
 import numpy as np
 import pytest
 
+from openpi.policies.async_runner import ActionPrediction
 from openpi.policies.async_runner import AsyncDualSystemRunner
 from openpi.policies.async_runner import PrefixExpiredError
+from openpi.policies.async_runner import PrefixPacket
 
 
 class Backend:
@@ -86,6 +88,24 @@ def test_worker_errors_are_reported():
         with pytest.raises(RuntimeError, match="worker failed") as caught:
             runner.wait_ready(2)
         assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_valid_future_actions_outlive_sampling_prefix_age():
+    backend = Backend()
+    with AsyncDualSystemRunner(backend, execution_horizon=4) as runner:
+        # A chunk sampled at state step 5 with a step-0 prefix is valid: its
+        # future positions are supervised by the same training action chunk.
+        with runner._cv:  # noqa: SLF001
+            runner._prefix = PrefixPacket(None, 0, 0.0, 1, 0, "", 0.1)  # noqa: SLF001
+            runner._prediction = ActionPrediction(  # noqa: SLF001
+                np.arange(4, dtype=float)[:, None], 5, 0.0, 0, 1, 5, 0.1
+            )
+        action, info = runner.action_at(7)
+        assert action[0] == 2
+        assert info["prefix_age_at_sample"] == 5
+        assert info["prefix_age_at_execute"] == 7
+        with pytest.raises(PrefixExpiredError):
+            runner.action_at(9)  # The execution horizon is now exhausted.
 
 
 def test_reset_discards_old_inflight_actions():

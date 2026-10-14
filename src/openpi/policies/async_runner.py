@@ -115,14 +115,15 @@ class AsyncDualSystemRunner:
         with self._cv:
             self._raise_worker_error()
             prefix, prediction = self._prefix, self._prediction
-            if prefix is not None and step - prefix.observation_step > self.backend.max_prefix_age:
-                raise PrefixExpiredError("Cached prefix exceeds the training age range; wait for a fresh prefix")
+            prefix_expired = prefix is not None and step - prefix.observation_step > self.backend.max_prefix_age
             if prediction is None:
+                if prefix_expired:
+                    raise PrefixExpiredError("Cached prefix exceeds the training age range; wait for a fresh prefix")
                 return None, {}
-            # Age of the condition used by this prediction can differ from the newest prefix.
+            # Training bounds the prefix/state gap at sampling. A valid chunk also
+            # predicts future actions; executing those positions must not reapply
+            # the sampling-age bound as a shorter action lifetime.
             used_prefix_step = prediction.observation_step - prediction.prefix_age
-            if step - used_prefix_step > self.backend.max_prefix_age:
-                return None, {"cache_id_used": prediction.cache_id, "expired_prediction": True}
             offset = step - prediction.observation_step
             info = {
                 "cache_id_used": prediction.cache_id,
@@ -135,6 +136,8 @@ class AsyncDualSystemRunner:
                 "encode_ms": prefix.encode_seconds * 1000 if prefix is not None else None,
             }
             if offset < 0 or offset >= min(len(prediction.actions), self.execution_horizon):
+                if prefix_expired:
+                    raise PrefixExpiredError("Cached prefix exceeds the training age range; wait for a fresh prefix")
                 return None, info
             return prediction.actions[offset].copy(), info
 

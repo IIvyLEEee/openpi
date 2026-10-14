@@ -86,13 +86,15 @@ uv run examples/libero/main_async.py \
   --args.replan-steps 5
 ```
 
-参数前缀 `args.` 与 `main.py` 的 `Args` CLI 一致。控制频率须匹配数据 FPS；openpi 的转换脚本写入 10 FPS，因此示例默认 10 Hz。
+参数前缀 `args.` 与 `main.py` 的 `Args` CLI 一致。默认每秒 10 个壁钟 tick，每个 tick 推进一次原有 LIBERO `env.step`。没有更改环境的 `control_freq=20`，因此一秒壁钟时间约推进 0.5 秒仿真时间；10 Hz 不是新的仿真控制频率。延迟标签以数据/环境步数计，不用壁钟秒数代替。
 
 两个 worker 分别持有 VLM 或 expert 模块，可放在不同 GPU；使用同一 GPU 时会争用算力，不能据此假定有加速。首次观测会等待有效 cache 和动作，之后 expert 不等待下一次 VLM 更新。KV 每次更新只向 expert device 转移一次。
 
-主循环按仿真步数发布观测并对齐新 chunk：从观测步到执行步已经过去几步，就跳过新 chunk 的相应位置。无可用动作时输出零 EEF 增量并保持夹爪指令，不重复过期位移。缓存超出训练年龄范围会显式报错并结束该 episode。reset/task 切换通过 generation 丢弃旧的在途结果。
+主循环按仿真步数发布观测并对齐新 chunk：从观测步到执行步已经过去几步，就跳过新 chunk 的相应位置。`replan_steps=5` 限制使用 chunk 的前 5 个位置；推理期间已过去的位置不再执行。无可用动作时输出零 EEF 增量并保持夹爪指令，不重复过期位移。
 
-输出目录包含视频和 `metrics.jsonl`，记录成功率、worker 延迟、所用 cache_id、条件年龄、动作 offset 和没有动作就绪的 tick。条件年龄按环境步计算；wall-clock timing 另行记录，不混作训练延迟标签。
+训练年龄上限约束采样时 `state_step - prefix_step`，expert 仅在这个差值为 0–5 时采样。训练监督包含后续动作，因此已经生成的 chunk 可以在有效位置内继续执行；执行时的 prefix 年龄等于采样年龄加动作 offset，可以超过 5。若 chunk 已用尽且 prefix 过期，runner 抛出 `PrefixExpiredError`，评估主循环保持姿态，等待 worker 更新；模型或基础设施错误直接中止评估。reset/task 切换通过 generation 丢弃旧的在途结果，每个 episode 结束后等待在途 worker 退出再重设随机种子。
+
+输出目录包含本地视频、`protocol.json`、`episodes.jsonl` 和 `summary.json`。使用与同步评估相同的图像/state 处理和逐 episode seed；记录成功率、worker 延迟、所用 cache_id、采样/执行年龄、动作 offset 和没有动作就绪的 tick，支持同协议断点续跑。没有额外注入延迟，也没有 streaming/action-buffer conditioning；实际延迟由两个 worker 的运行产生。W&B 可仅上传指标和 JSON，视频保留本地。
 
 ## 验证
 
