@@ -226,6 +226,20 @@ checkpoint 仍每 1000 steps 保存，只留各活动阶段最新完整 checkpoi
 
 两路线已于 2026-10-12 在 tmux session `pi05-direct-40k`、`pi05-staged-40k` 启动，并完成多步真实优化，峰值 allocated 约 54.4 GB/卡、预热后约 9.8 秒/步。W&B 服务端确认两 run 均为 running、同一 comparison group，直接延迟的条件年龄最大 5，同步为 0。[直接延迟 40k](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/0ghenb07)；[同步 30k](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/wr08liy0)。阶段二成功启动后会创建独立 W&B run。实际配置与启动核验分别保存在 `logs/libero_compare_40k_b128/experiment_manifest.json`、`wandb_startup_verified.json`。
 
+## 同步 30k 后的四卡延迟阶段（2026-10-16）
+
+用户将直接延迟路线的停止点改为 30k，并要求同步路线满 30k 后使用全部四张 A800 继续 10k 延迟微调。直接路线停止时计算日志到 30586，保留完整的 30000-step checkpoint（含远程 optimizer）；同步路线已经完成 30000。原自动启动的两卡延迟阶段运行到 337，尚无 checkpoint，已中止并保留日志和 W&B 历史；新的四卡阶段从同步 30k 重新初始化，不接续这 337 步。
+
+```bash
+bash scripts/train_libero_compare_autodl.sh delay4
+```
+
+该入口选择 GPU 0–3 / 4 个 DDP ranks，global batch 仍为 128，因此每卡 batch 从 64 改为 32。实验名为 `dual_state_sync30k_delay10k_b128_4gpu`，从 `checkpoints/pi05_libero_async/dual_state_sync_30k_b128/30000` 严格加载模型；重新初始化 optimizer，训练 10000 steps，delay 0–5、warmup 500、cosine decay 10000，expert / VLM peak LR 保持 5e-5 / 5e-6。不因卡数翻倍调整 LR。完整 checkpoint 可断点恢复，成功结束时写入 `training_complete`，共享保存锁与 retention 规则保持原样。
+
+直接延迟的 30k 模型、metadata 和 norm stats 已完整传至本机 `eval/checkpoints/20261016_direct_30000/dual_state_direct_delay_40k_b128/30000/`。模型 7,473,251,472 bytes / 815 tensors，SHA256 与服务器一致：`891686019757955285cba85b254fdac5a3fa8f9381647aea4ade57065779ad9c`；metadata 的 step/batch/delay 及 stats 校验通过，传输分片已清理。服务器原 30k checkpoint 和 optimizer 保留；仅模型与评估所需配套文件传回本机。
+
+确认传输完成后已启动四卡任务，tmux 为 `pi05-delay4-10k`，[W&B run 为 zd7d4bze](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/zd7d4bze)。启动核验时已到第 788/10000 步，4 个 ranks 的 WORLD_SIZE=4，模型与 DataLoader 的实际 batch 均为每卡 32 / global 128；loss 与梯度有限，prefix_age_max=5，约 5.06 秒/步，四卡利用率均为 100%、显存约 42 GB/卡。10k 训练仍在进行中。切换记录与核验位于远程 `logs/libero_compare_40k_b128/continuation_4gpu_20261016.json`、`four_gpu_startup_verified_20261016.json`；本地证据为 `eval/30000_transfer/four_gpu_wandb_verified.json`、`four_gpu_status.json` 及 checkpoint 根目录下的 `verified_manifest.json`。
+
 ## 本地 checkpoint rollout
 
 `examples/libero/evaluate_checkpoint.py` 直接加载 PyTorch checkpoint 与其全量 norm stats，使用 OpenPI 固定的 LIBERO commit `f78abd68ee283de9f9be3c8f7e2a9ad60246e95c`。评估依赖单独安装到继承 OpenPI 的隔离环境，版本见 `examples/libero/requirements_eval.txt`；不修改训练环境。PyTorch 2.7 读取可信的官方 `.pruned_init` 文件时需要 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`。

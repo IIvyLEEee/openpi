@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Two independent two-GPU experiments. Rerunning resumes the active phase.
+# Two-GPU comparison routes and a four-GPU continuation. Rerunning resumes the active phase.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/autodl_env.sh"
 cd "$OPENPI_REPO_ROOT"
-route="${1:?Usage: train_libero_compare_autodl.sh direct|staged}"
+route="${1:?Usage: train_libero_compare_autodl.sh direct|staged|delay4}"
 case "$route" in
     direct) export CUDA_VISIBLE_DEVICES=0,1 ;;
     staged) export CUDA_VISIBLE_DEVICES=2,3 ;;
+    delay4) export CUDA_VISIBLE_DEVICES=0,1,2,3 ;;
     *) printf 'Unknown route: %s\n' "$route" >&2; exit 2 ;;
 esac
 export NPROC_PER_NODE=2 BATCH_SIZE=128 NUM_WORKERS=4
+if [[ "$route" == delay4 ]]; then
+    export NPROC_PER_NODE=4
+fi
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
 export WANDB_RUN_GROUP=pi05_async_40k_b128_compare
 export WANDB_TAGS=dual-state,full-finetune,batch128,"$route"
@@ -50,7 +54,7 @@ PY
 
 if [[ "$route" == direct ]]; then
     run_phase direct-delay dual_state_direct_delay_40k_b128 40000
-else
+elif [[ "$route" == staged ]]; then
     run_phase sync dual_state_sync_30k_b128 30000
     export INIT_CHECKPOINT="$OPENPI_REPO_ROOT/checkpoints/pi05_libero_async/dual_state_sync_30k_b128/30000"
     # Stage two initializes model weights with a new optimizer. Keep the synchronous
@@ -68,5 +72,21 @@ assert (root / 'assets/physical-intelligence/libero/norm_stats.json').is_file()
 print('Retained synchronous model/metadata/stats; removed completed-phase optimizer', flush=True)
 PY
     run_phase delay dual_state_sync30k_delay10k_b128 10000
+else
+    export INIT_CHECKPOINT="$OPENPI_REPO_ROOT/checkpoints/pi05_libero_async/dual_state_sync_30k_b128/30000"
+    python - "$INIT_CHECKPOINT" <<'PY'
+from pathlib import Path
+import sys
+import torch
+root = Path(sys.argv[1])
+metadata = torch.load(root / 'metadata.pt', map_location='cpu', weights_only=False)
+assert metadata['global_step'] == 30000
+assert metadata['config']['data']['prefix_delay_max'] == 0
+assert metadata['config']['batch_size'] == 128
+assert (root / 'model.safetensors').is_file()
+assert (root / 'assets/physical-intelligence/libero/norm_stats.json').is_file()
+print('Four-GPU delay stage: global batch 128, per-GPU batch 32; synchronous step 30000 initialization', flush=True)
+PY
+    run_phase delay dual_state_sync30k_delay10k_b128_4gpu 10000
 fi
 printf 'Completed %s route\n' "$route"
