@@ -238,7 +238,9 @@ bash scripts/train_libero_compare_autodl.sh delay4
 
 直接延迟的 30k 模型、metadata 和 norm stats 已完整传至本机 `eval/checkpoints/20261016_direct_30000/dual_state_direct_delay_40k_b128/30000/`。模型 7,473,251,472 bytes / 815 tensors，SHA256 与服务器一致：`891686019757955285cba85b254fdac5a3fa8f9381647aea4ade57065779ad9c`；metadata 的 step/batch/delay 及 stats 校验通过，传输分片已清理。服务器原 30k checkpoint 和 optimizer 保留；仅模型与评估所需配套文件传回本机。
 
-确认传输完成后已启动四卡任务，tmux 为 `pi05-delay4-10k`，[W&B run 为 zd7d4bze](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/zd7d4bze)。启动核验时已到第 788/10000 步，4 个 ranks 的 WORLD_SIZE=4，模型与 DataLoader 的实际 batch 均为每卡 32 / global 128；loss 与梯度有限，prefix_age_max=5，约 5.06 秒/步，四卡利用率均为 100%、显存约 42 GB/卡。10k 训练仍在进行中。切换记录与核验位于远程 `logs/libero_compare_40k_b128/continuation_4gpu_20261016.json`、`four_gpu_startup_verified_20261016.json`；本地证据为 `eval/30000_transfer/four_gpu_wandb_verified.json`、`four_gpu_status.json` 及 checkpoint 根目录下的 `verified_manifest.json`。
+确认传输完成后已启动四卡任务，tmux 为 `pi05-delay4-10k`，[W&B run 为 zd7d4bze](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/zd7d4bze)。启动核验时已到第 788/10000 步，4 个 ranks 的 WORLD_SIZE=4，模型与 DataLoader 的实际 batch 均为每卡 32 / global 128；loss 与梯度有限，prefix_age_max=5，约 5.06 秒/步，四卡利用率均为 100%、显存约 42 GB/卡。该 10k 阶段已于 2026-10-16 21:46 完成，累计同步 30k + 延迟 10k；完成标记为 10000，W&B 为 finished、checkpoint_step=10000，四张 GPU 均已释放。切换记录与核验位于远程 `logs/libero_compare_40k_b128/continuation_4gpu_20261016.json`、`four_gpu_startup_verified_20261016.json`；本地证据为 `eval/30000_transfer/four_gpu_wandb_verified.json`、`four_gpu_status.json` 及 checkpoint 根目录下的 `verified_manifest.json`。
+
+最终 10000-step 模型及 metadata/norm stats 已传回本机 `eval/checkpoints/20261016_sync30k_delay10k/dual_state_sync30k_delay10k_b128_4gpu/10000/`。模型 7,473,251,472 bytes / 815 tensors，服务器与本地 SHA256 一致：`5c12f8a3e2116880a7d85c74549aadbcd4c7f3ab2cc24f49bfc2360746091f36`。metadata 的 step/source/batch/delay/LR schedule 与 tensor header 均验证通过；optimizer 保留在远程原 checkpoint，传输中间分片已清理。完整校验记录为 checkpoint 根目录的 `completion_verified.json`、`verified_manifest.json`，W&B 完成核验位于 `eval/10000_transfer/wandb_finished_verified.json`。
 
 ## 本地 checkpoint rollout
 
