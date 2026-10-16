@@ -29,7 +29,8 @@ class Args:
     expert_device: str = "cuda:1"
     num_steps: int = 10
     rate_hz: float = 10.0  # Wall-clock ticks; each tick advances one original LIBERO step.
-    replan_steps: int = 5
+    execution_horizon: int | None = None  # Default: all positions in the predicted chunk.
+    replan_steps: int | None = None  # Legacy alias for the execution cap.
     task_suite_name: str = "libero_spatial"
     num_trials_per_task: int = 10
     num_steps_wait: int = 10
@@ -66,8 +67,13 @@ def eval_libero(args: Args):
     if args.rate_hz <= 0 or args.num_trials_per_task <= 0:
         raise ValueError("rate_hz and num_trials_per_task must be positive")
     config = get_config(args.config_name)
-    if not 0 < args.replan_steps <= config.model.action_horizon:
-        raise ValueError("replan_steps exceeds the model action horizon")
+    if args.execution_horizon is not None and args.replan_steps is not None:
+        raise ValueError("Use execution_horizon, or the legacy replan_steps alias, not both")
+    execution_horizon = args.execution_horizon if args.execution_horizon is not None else args.replan_steps
+    if execution_horizon is None:
+        execution_horizon = config.model.action_horizon
+    if not 0 < execution_horizon <= config.model.action_horizon:
+        raise ValueError("execution_horizon exceeds the model action horizon")
     output = pathlib.Path(args.video_out_path)
     output.mkdir(parents=True, exist_ok=True)
     specification = {
@@ -76,6 +82,7 @@ def eval_libero(args: Args):
         "injected_delay": False,
         "prefix_age_bound": "sampling",
         "simulation_control_freq": 20,
+        "resolved_execution_horizon": execution_horizon,
     }
     spec_path = output / "protocol.json"
     if spec_path.exists() and json.loads(spec_path.read_text()) != specification:
@@ -125,7 +132,7 @@ def eval_libero(args: Args):
                     gripper = -1.0
                     start = time.monotonic()
                     # Join in-flight workers before reseeding the next episode.
-                    with AsyncDualSystemRunner(backend, execution_horizon=args.replan_steps) as runner:
+                    with AsyncDualSystemRunner(backend, execution_horizon=execution_horizon) as runner:
                         runner.reset(prompt)
                         runner.publish(_observation(obs, prompt), step=0)
                         runner.wait_ready()
@@ -173,7 +180,7 @@ def eval_libero(args: Args):
                         "startup_seconds": startup_seconds,
                         "rate_hz": args.rate_hz,
                         "num_steps": args.num_steps,
-                        "replan_steps": args.replan_steps,
+                        "execution_horizon": execution_horizon,
                         "timing": timing,
                     }
                     metrics.write(json.dumps(record) + "\n")

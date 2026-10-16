@@ -83,14 +83,14 @@ uv run examples/libero/main_async.py \
   --args.task-suite-name libero_spatial \
   --args.num-trials-per-task 10 \
   --args.rate-hz 10 \
-  --args.replan-steps 5
+  --args.execution-horizon 10
 ```
 
 参数前缀 `args.` 与 `main.py` 的 `Args` CLI 一致。默认每秒 10 个壁钟 tick，每个 tick 推进一次原有 LIBERO `env.step`。没有更改环境的 `control_freq=20`，因此一秒壁钟时间约推进 0.5 秒仿真时间；10 Hz 不是新的仿真控制频率。延迟标签以数据/环境步数计，不用壁钟秒数代替。
 
 两个 worker 分别持有 VLM 或 expert 模块，可放在不同 GPU；使用同一 GPU 时会争用算力，不能据此假定有加速。首次观测会等待有效 cache 和动作，之后 expert 不等待下一次 VLM 更新。KV 每次更新只向 expert device 转移一次。
 
-主循环按仿真步数发布观测并对齐新 chunk：从观测步到执行步已经过去几步，就跳过新 chunk 的相应位置。`replan_steps=5` 限制使用 chunk 的前 5 个位置；推理期间已过去的位置不再执行。无可用动作时输出零 EEF 增量并保持夹爪指令，不重复过期位移。
+主循环按仿真步数发布观测并对齐新 chunk：从观测步到执行步已经过去几步，就跳过新 chunk 的相应位置。默认允许使用完整预测窗口（当前模型为 10 个位置），`execution_horizon` 可以显式缩短窗口。旧参数 `replan_steps` 作为该窗口上限的别名保留，两参数不能同时设置；`--args.replan-steps 5` 可复现 18k 历史评估的前 5 位置限制。推理期间已过去的位置不再执行。无可用动作时输出零 EEF 增量并保持夹爪指令，不重复过期位移。
 
 训练年龄上限约束采样时 `state_step - prefix_step`，expert 仅在这个差值为 0–5 时采样。训练监督包含后续动作，因此已经生成的 chunk 可以在有效位置内继续执行；执行时的 prefix 年龄等于采样年龄加动作 offset，可以超过 5。若 chunk 已用尽且 prefix 过期，runner 抛出 `PrefixExpiredError`，评估主循环保持姿态，等待 worker 更新；模型或基础设施错误直接中止评估。reset/task 切换通过 generation 丢弃旧的在途结果，每个 episode 结束后等待在途 worker 退出再重设随机种子。
 
@@ -267,5 +267,11 @@ CUDA_VISIBLE_DEVICES=2 MUJOCO_EGL_DEVICE_ID=2 \
 2026-10-13：取用户请求时两路线最新完整的 6000-step checkpoint，本地空闲 GPU 2、3 分别评估 direct-delay 与同步路线，各 200 episodes。远程训练继续运行。评估单独记录到 W&B group `pi05_libero_ckpt6000_rollout_20261013`，不写入正在训练的 run。
 
 本轮已完成：direct-delay 128/200（64.0%），同步 131/200（65.5%）。任务覆盖、初始状态、种子与成功计数核对通过，两组退出码均为 0；各 suite 的结果见 [评估报告](results/pi05_libero_ckpt6000_20261013.md)。按用户要求，视频仅保存在本地，W&B 只同步指标与 JSON 结果。后续需要在相同条件下比较两种 checkpoint 的真实双 worker 异步 rollout，以及受控 cache delay；本轮结果不能替代异步评估。
+
+## 最终 checkpoint 的 Spatial 对照（2026-10-16）
+
+沿用最近 18k 评估的 Spatial 范围，每模型每种模式各 50 次。直接延迟 30k 的同步/异步为 44/50（88%）/ 43/50（86%）；同步 30k＋延迟 10k 为 42/50（84%）/ 43/50（86%）。本轮异步统一允许完整 10 位置窗口，两组均无动作断档；旧 18k 异步限制前 5 位置，不能直接按同协议比较。flow steps 仍为 10，未增加人为延迟或 streaming。
+
+纯同步 30k 模型尚未传回，原服务器 SSH 端口拒绝连接，需恢复连接后补齐；历史同步模型是 18k。完整协议、逐任务结果、checkpoint SHA256 与四个已完成 W&B run 见 [本轮报告](results/pi05_libero_spatial_30k_vs_staged40k_20261016.md)。视频仍仅本地。
 
 同日使用官方 `pi05_libero` checkpoint 进行 Spatial 校准：复用同一评估入口、初始状态与随机种子，50/50（100%），退出码 0；我们的 direct/sync 6000-step checkpoint 分别为 40/50（80%）、37/50（74%）。评估统一关闭 torch.compile，与既有双状态配置一致。官方源文件经过 MD5/CRC32C 校验，使用官方 converter 转换并复制其 norm stats；详见 [官方 Spatial 校准报告](results/pi05_libero_official_spatial_20261013.md)。当前流程能评估 stock 模型的高成功率，但不能据此排除双状态模型路径的问题；训练步数、结构及训练配置差异仍需进一步验证。

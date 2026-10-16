@@ -108,6 +108,24 @@ def test_valid_future_actions_outlive_sampling_prefix_age():
             runner.action_at(9)  # The execution horizon is now exhausted.
 
 
+def test_full_chunk_bridges_inference_gap_without_replaying_past_positions():
+    backend = Backend()
+    with AsyncDualSystemRunner(backend, execution_horizon=10) as runner:
+        with runner._cv:  # noqa: SLF001
+            runner._prefix = PrefixPacket(None, 0, 0.0, 1, 0, "", 0.1)  # noqa: SLF001
+            runner._prediction = ActionPrediction(  # noqa: SLF001
+                np.arange(10, dtype=float)[:, None], 1, 0.0, 0, 1, 1, 0.3
+            )
+        # The old five-position cap would hold at offsets 5-9 even though these
+        # future actions were predicted and the next chunk may still be in flight.
+        for step in range(4, 11):
+            action, info = runner.action_at(step)
+            assert action[0] == step - 1
+            assert info["action_offset"] == step - 1
+        with pytest.raises(PrefixExpiredError):
+            runner.action_at(11)
+
+
 def test_reset_discards_old_inflight_actions():
     class BlockingExpert(Backend):
         def encode(self, observation):
