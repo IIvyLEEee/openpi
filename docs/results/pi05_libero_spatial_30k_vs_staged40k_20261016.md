@@ -1,19 +1,18 @@
 # π0.5：30k 与同步 30k＋延迟 10k 的 Spatial 对照
 
-2026-10-16。本轮每模型分别完成同步、真实双 worker 异步各 50 episodes（10 tasks × 5 trials）。
+2026-10-16 完成直接延迟与累计 40k 两组，2026-10-17 补齐纯同步 30k。本轮每模型分别完成同步、真实双 worker 异步各 50 episodes（10 tasks × 5 trials）。
 
 | 训练路线 | 累计训练步数 | 同步 rollout | 异步 rollout | 异步无动作 tick |
 | --- | ---: | ---: | ---: | ---: |
-| 同步30k+延迟10k | 40000 | 42/50（84%） | 43/50（86%） | 0.00% |
 | 直接延迟30k | 30000 | 44/50（88%） | 43/50（86%） | 0.00% |
+| 同步30k | 30000 | 41/50（82%） | 41/50（82%） | 0.00% |
+| 同步30k+延迟10k | 40000 | 42/50（84%） | 43/50（86%） | 0.00% |
 
-本轮两条路线的异步成功次数相同；同步相差 2 个 episode。纯同步 30k 基线尚缺，当前结果不能判断追加延迟 10k 相对于其起点是否改善。
-
-**缺项：纯同步训练 30k 尚未评估。** 本机没有该 checkpoint，AutoDL 原 SSH 端口拒绝连接。历史纯同步结果是 18k，未将其冒充 30k；恢复连接后需要补齐同协议两种 rollout。
+追加延迟阶段前后，本轮同步成功数为 41/50 → 42/50，异步为 41/50 → 43/50。每模式仅 50 次，结果用于描述这套训练方案，不能单独分离新增训练步数、延迟数据和重启 LR schedule 的影响。
 
 ## 协议与历史记录
 
-此前 6k 跑过四个 suite，最近一次 18k 仅跑 Spatial；此前不存在 30k 的成功率记录。本轮沿用最近范围，只跑 Spatial，并重新评估本机可用的 30k 基线。
+此前 6k 跑过四个 suite，最近一次 18k 仅跑 Spatial；本轮开始前不存在 30k 的成功率记录。本轮沿用最近范围，只跑 Spatial，并使用同协议评估 30k 基线。
 
 所有模型使用相同官方初始状态 0–4、逐 episode seed 7+100×task_id+trial、settle 10、最多 220 控制步、10 步 flow sampling（NFE=10）、eager PyTorch。图像旋转/resize、proprio 拼接及动作变换复用已有 eval。任务、初始状态与 seed 逐项匹配历史 18k 记录。
 
@@ -27,25 +26,26 @@ LIBERO 环境仍为 control_freq=20，每个 10 Hz 壁钟 tick 推进一个原�
 
 | 训练路线 | 采样 prefix 年龄均值 | 执行 prefix 年龄均值 / 最大值 | 已执行预测的采样耗时均值 / P95 | 用到 offset≥5 的 tick |
 | --- | ---: | ---: | ---: | ---: |
-| 同步30k+延迟10k | 1.08 | 5.28 / 11 | 247.2 / 334.5 ms | 2139 |
 | 直接延迟30k | 1.02 | 5.06 / 10 | 239.8 / 304.9 ms | 1892 |
+| 同步30k | 1.02 | 5.03 / 10 | 238.2 / 293.6 ms | 2018 |
+| 同步30k+延迟10k | 1.08 | 5.28 / 11 | 247.2 / 334.5 ms | 2139 |
 
 预测耗时按每 episode 的 `(state_step, cache_id_used)` 去重，仅统计至少执行过一个动作的预测，不包括被完全丢弃的预测。年龄均值按实际执行动作加权；原始 `encode_ms` 表示当时最新发布 prefix 的耗时，不保证对应当前动作使用的 prefix。采样年龄与执行年龄分开检查，后者等于前者加动作 offset，可超过 5（最大合法值 14）。
 
 ## 逐任务成功数
 
-| Spatial task ID | 同步30k+延迟10k 同步 / 异步 | 直接延迟30k 同步 / 异步 |
-| --- | ---: | ---: |
-| 0 | 5/5 / 5/5 | 5/5 / 5/5 |
-| 1 | 5/5 / 5/5 | 5/5 / 4/5 |
-| 2 | 5/5 / 5/5 | 5/5 / 5/5 |
-| 3 | 5/5 / 5/5 | 4/5 / 5/5 |
-| 4 | 2/5 / 2/5 | 3/5 / 3/5 |
-| 5 | 4/5 / 4/5 | 4/5 / 4/5 |
-| 6 | 5/5 / 5/5 | 5/5 / 5/5 |
-| 7 | 5/5 / 5/5 | 5/5 / 4/5 |
-| 8 | 2/5 / 2/5 | 4/5 / 3/5 |
-| 9 | 4/5 / 5/5 | 4/5 / 5/5 |
+| Spatial task ID | 直接延迟30k 同步 / 异步 | 同步30k 同步 / 异步 | 同步30k+延迟10k 同步 / 异步 |
+| --- | ---: | ---: | ---: |
+| 0 | 5/5 / 5/5 | 5/5 / 2/5 | 5/5 / 5/5 |
+| 1 | 5/5 / 4/5 | 5/5 / 5/5 | 5/5 / 5/5 |
+| 2 | 5/5 / 5/5 | 4/5 / 5/5 | 5/5 / 5/5 |
+| 3 | 4/5 / 5/5 | 5/5 / 4/5 | 5/5 / 5/5 |
+| 4 | 3/5 / 3/5 | 2/5 / 2/5 | 2/5 / 2/5 |
+| 5 | 4/5 / 4/5 | 2/5 / 4/5 | 4/5 / 4/5 |
+| 6 | 5/5 / 5/5 | 5/5 / 5/5 | 5/5 / 5/5 |
+| 7 | 5/5 / 4/5 | 5/5 / 5/5 | 5/5 / 5/5 |
+| 8 | 4/5 / 3/5 | 4/5 / 4/5 | 2/5 / 2/5 |
+| 9 | 4/5 / 5/5 | 4/5 / 5/5 | 4/5 / 5/5 |
 
 ## Checkpoint 与运行环境
 
@@ -55,15 +55,17 @@ LIBERO 环境仍为 control_freq=20，每个 10 Hz 壁钟 tick 推进一个原�
 
 模型全文件 SHA256 在传输时已与服务器比对，完成后通过原子重命名发布；本次再次核对 verified manifest、文件大小、metadata step/source/batch/delay 与 norm stats SHA，逐 episode 检查覆盖、身份、退出码、成功计数，逐 tick 检查年龄、offset 和有效时延。所有模型使用相同全量 norm stats：`ccf0c0d5ca98df82a7b2933afb5441141a5d2f06b494d0f9106f5aad8492d05e`。
 
-- 同步30k+延迟10k：stage step 10000 / cumulative 40000，SHA256 `5c12f8a3e2116880a7d85c74549aadbcd4c7f3ab2cc24f49bfc2360746091f36`；本地 `/home/liyixuan23/mlsys/openpi/eval/checkpoints/20261016_sync30k_delay10k/dual_state_sync30k_delay10k_b128_4gpu/10000`。
 - 直接延迟30k：stage step 30000 / cumulative 30000，SHA256 `891686019757955285cba85b254fdac5a3fa8f9381647aea4ade57065779ad9c`；本地 `/home/liyixuan23/mlsys/openpi/eval/checkpoints/20261016_direct_30000/dual_state_direct_delay_40k_b128/30000`。
+- 同步30k：stage step 30000 / cumulative 30000，SHA256 `8ba3da23ad196e6810e8e340bcfa13948114d4e5694bfd0c08778405a52ebf14`；本地 `/home/liyixuan23/mlsys/openpi/eval/checkpoints/20261016_sync_30000/dual_state_sync_30k_b128/30000`。
+- 同步30k+延迟10k：stage step 10000 / cumulative 40000，SHA256 `5c12f8a3e2116880a7d85c74549aadbcd4c7f3ab2cc24f49bfc2360746091f36`；本地 `/home/liyixuan23/mlsys/openpi/eval/checkpoints/20261016_sync30k_delay10k/dual_state_sync30k_delay10k_b128_4gpu/10000`。
 
 ## 结果与 W&B
 
 本地完整指标、逐 episode/tick 记录、协议、硬件信息及校验比较：`eval/results/20261016_spatial_30k_vs_staged40k/`。`comparison.json` 包含成功率、逐任务结果和时序统计；视频仅保存在本地，W&B 仅上传指标及 JSON。
 
-- 同步30k+延迟10k：[同步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/riqe8kue)、[异步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/9l8a0sfi)。
 - 直接延迟30k：[同步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/50fpeycc)、[异步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/uya1rph1)。
+- 同步30k：[同步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/z8v5jzxo)、[异步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/vigig0y0)。
+- 同步30k+延迟10k：[同步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/riqe8kue)、[异步](https://wandb.ai/iivyleeee-tsinghua-university/pi05-async-libero/runs/9l8a0sfi)。
 
 完整窗口变更通过 6 项 async runner 测试、Ruff 与格式检查；没有改变模型权重或采样算法。W&B 完成状态、episode/成功计数、退出码及无视频上传情况另存 `wandb_verified.json`。
 

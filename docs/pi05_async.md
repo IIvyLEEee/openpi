@@ -270,8 +270,8 @@ CUDA_VISIBLE_DEVICES=2 MUJOCO_EGL_DEVICE_ID=2 \
 
 ## 最终 checkpoint 的 Spatial 对照（2026-10-16）
 
-沿用最近 18k 评估的 Spatial 范围，每模型每种模式各 50 次。直接延迟 30k 的同步/异步为 44/50（88%）/ 43/50（86%）；同步 30k＋延迟 10k 为 42/50（84%）/ 43/50（86%）。本轮异步统一允许完整 10 位置窗口，两组均无动作断档；旧 18k 异步限制前 5 位置，不能直接按同协议比较。flow steps 仍为 10，未增加人为延迟或 streaming。
+沿用最近 18k 评估的 Spatial 范围，每模型每种模式各 50 次。直接延迟 30k 的同步/异步为 44/50（88%）/ 43/50（86%）；纯同步 30k 为 41/50（82%）/ 41/50（82%）；同步 30k＋延迟 10k 为 42/50（84%）/ 43/50（86%）。本轮异步统一允许完整 10 位置窗口，三组均无动作断档；旧 18k 异步限制前 5 位置，不能直接按同协议比较。flow steps 仍为 10，未增加人为延迟或 streaming。
 
-纯同步 30k 模型尚未传回，原服务器 SSH 端口拒绝连接，需恢复连接后补齐；历史同步模型是 18k。完整协议、逐任务结果、checkpoint SHA256 与四个已完成 W&B run 见 [本轮报告](results/pi05_libero_spatial_30k_vs_staged40k_20261016.md)。视频仍仅本地。
+原服务器恢复连接后，纯同步 30k 已于 2026-10-17 补传并完成两种评估。本机路径 `eval/checkpoints/20261016_sync_30000/dual_state_sync_30k_b128/30000/`，模型、metadata 与 norm stats 均已校验，确认 step=30000、训练 delay=0、global batch=128；此前同一实验名下传回的是 6k 和 18k。完整协议、逐任务结果、checkpoint SHA256 与六个已完成 W&B run 见 [本轮报告](results/pi05_libero_spatial_30k_vs_staged40k_20261016.md)。视频仍仅本地。
 
 同日使用官方 `pi05_libero` checkpoint 进行 Spatial 校准：复用同一评估入口、初始状态与随机种子，50/50（100%），退出码 0；我们的 direct/sync 6000-step checkpoint 分别为 40/50（80%）、37/50（74%）。评估统一关闭 torch.compile，与既有双状态配置一致。官方源文件经过 MD5/CRC32C 校验，使用官方 converter 转换并复制其 norm stats；详见 [官方 Spatial 校准报告](results/pi05_libero_official_spatial_20261013.md)。当前流程能评估 stock 模型的高成功率，但不能据此排除双状态模型路径的问题；训练步数、结构及训练配置差异仍需进一步验证。
